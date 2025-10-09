@@ -1,0 +1,707 @@
+//! VNC client connection handling and protocol implementation.
+//!
+//! This module manages individual VNC client sessions, handling:
+//! - RFB protocol handshake and negotiation
+//! - Client message processing (input events, encoding requests, etc.)
+//! - Framebuffer update transmission with batching and rate limiting
+//! - Client-specific state management (pixel format, encodings, dirty regions)
+//!
+//! # Protocol Flow
+//!
+//! 1. **Handshake**: Protocol version exchange and security negotiation
+//! 2. **Initialization**: Send framebuffer dimensions and pixel format
+//! 3. **Message Loop**: Handle incoming client messages and send framebuffer updates
+//!
+//! # Performance Features
+//!
+//! - **Update Deferral**: Batches small changes to reduce message overhead
+//! - **Region Merging**: Combines overlapping dirty regions for efficiency
+//! - **Encoding Selection**: Chooses optimal encoding based on client capabilities
+//! - **Rate Limiting**: Prevents overwhelming clients with excessive update frequency
+
+use bytes::{Buf, BufMut, BytesMut};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
+use tokio::sync::RwLock;
+use std::time::{Duration, Instant};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpStream;
+use tokio::sync::mpsc;
+use log::{info, error};
+use flate2::Compress;
+use flate2::Compression;
+
+use crate::vnc::protocol::*;
+use crate::vnc::framebuffer::{Framebuffer, DirtyRegion};
+use crate::vnc::auth::VncAuth;
+use crate::vnc::encoding;
+
+
+/// Represents various events that a VNC client can send to the server.
+/// These events typically correspond to user interactions like keyboard input,
+/// pointer movements, or clipboard updates.
+pub enum ClientEvent {
+    /// A key press or release event.
+    /// - `down`: `true` if the key is pressed, `false` if released.
+    /// - `key`: The X Window System keysym of the key.
+    KeyPress { down: bool, key: u32 },
+    /// A pointer (mouse) movement or button event.
+    /// - `x`: The X-coordinate of the pointer.
+    /// - `y`: The Y-coordinate of the pointer.
+    /// - `button_mask`: A bitmask indicating which mouse buttons are pressed.
+    PointerMove { x: u16, y: u16, button_mask: u8 },
+    /// A client-side clipboard (cut text) update.
+    /// - `text`: The textual content from the client's clipboard.
+    CutText { text: String },
+    /// Notification that the client has disconnected.
+    Disconnected,
+}
+
+/// Manages a single VNC client connection, handling communication, framebuffer updates,
+/// and client input events.
+///
+/// This struct encapsulates the state and logic for interacting with a connected VNC viewer.
+/// It is responsible for sending framebuffer updates to the client based on dirty regions,
+/// processing incoming client messages (e.g., key events, pointer events, pixel format requests),
+/// and managing client-specific settings like preferred encodings and JPEG quality.
+pub struct VncClient {
+    /// The underlying TCP stream for communication with the VNC client.
+    stream: TcpStream,
+    /// A reference to the framebuffer, used to retrieve pixel data for updates.
+    framebuffer: Framebuffer,
+    /// The pixel format requested by the client, protected by a `RwLock` for concurrent access.
+    /// It is written by the message handler and read by the encoder.
+    pixel_format: RwLock<PixelFormat>, // Protected - written by message handler, read by encoder
+    /// The list of preferred encodings supported by the client, protected by a `RwLock`.
+    /// It is written by the message handler and read by the encoder.
+    encodings: RwLock<Vec<i32>>, // Protected - written by message handler, read by encoder
+    /// Sender for client events (e.g., key presses, pointer movements) to be processed by other parts of the server.
+    event_tx: mpsc::UnboundedSender<ClientEvent>,
+    /// The `Instant` when the last framebuffer update was sent to this client, protected by a `RwLock`.
+    /// Used for rate limiting and deferral logic.
+    last_update_sent: RwLock<Instant>, // Protected - written by update sender, read by rate limiter
+    /// The JPEG quality level for encodings, stored as an `AtomicU8` for atomic access from multiple contexts.
+    jpeg_quality: AtomicU8, // Atomic - simple u8 value accessed from multiple contexts
+    /// The compression level for encodings (e.g., Zlib), stored as an `AtomicU8` for atomic access.
+    compression_level: AtomicU8, // Atomic - simple u8 value accessed from multiple contexts
+    /// A flag indicating whether the client has requested continuous framebuffer updates, stored as an `AtomicBool`.
+    continuous_updates: AtomicBool, // Atomic - simple bool flag
+    /// A shared, locked vector of `DirtyRegion`s specific to this client.
+    /// These regions represent areas of the framebuffer that have been modified and need to be sent to the client.
+    modified_regions: Arc<RwLock<Vec<DirtyRegion>>>, // Per-client dirty regions (libvncserver style - receives pushes from framebuffer)
+    /// The region specifically requested by the client for an update, protected by a `RwLock`.
+    /// It is written by the message handler and read by the encoder.
+    requested_region: RwLock<Option<DirtyRegion>>, // Protected - written by message handler, read by encoder
+    // NOTE: CopyRect is handled via automatic detection in framebuffer.detect_copy_rect()
+    // rather than explicit copyRegion state management (differs from libvncserver approach)
+    /// The duration to defer sending updates, matching `libvncserver`'s default.
+    defer_update_time: Duration, // Constant - set once at init
+    /// The timestamp (in nanoseconds since creation) when deferring of updates began (0 if not deferring).
+    /// Stored as an `AtomicU64` for atomic access.
+    start_deferring_nanos: AtomicU64, // Atomic - nanos since creation (0 = not deferring)
+    /// The `Instant` when this `VncClient` instance was created, used for calculating elapsed time.
+    creation_time: Instant, // Constant - for calculating elapsed time
+    /// The maximum number of rectangles to send in a single framebuffer update message, matching `libvncserver`'s default.
+    max_rects_per_update: usize, // Constant - set once at init
+    /// A mutex used to ensure exclusive access to the client's `TcpStream` for sending data,
+    /// preventing interleaved writes from concurrent tasks.
+    send_mutex: Arc<tokio::sync::Mutex<()>>,
+    /// Persistent zlib compressor for Zlib encoding (RFC 6143: one stream per connection).
+    /// Protected by RwLock since encoding happens during send_batched_update.
+    zlib_compressor: RwLock<Option<Compress>>,
+    /// Persistent zlib compressor for ZRLE encoding (RFC 6143: one stream per connection).
+    /// Protected by RwLock since encoding happens during send_batched_update.
+    zrle_compressor: RwLock<Option<Compress>>,
+}
+
+impl VncClient {
+    /// Creates a new `VncClient` instance, performing the VNC handshake with the connected client.
+    ///
+    /// This function handles the initial protocol version exchange, security type negotiation,
+    /// and sends the `ServerInit` message to the client, providing framebuffer information.
+    ///
+    /// # Arguments
+    ///
+    /// * `stream` - The `TcpStream` representing the established connection to the VNC client.
+    /// * `framebuffer` - The `Framebuffer` instance that this client will receive updates from.
+    /// * `desktop_name` - The name of the desktop to be sent to the client during `ServerInit`.
+    /// * `password` - An optional password for VNC authentication. If `Some`, VNC authentication
+    ///   will be offered. (Note: Current implementation uses a placeholder for authentication).
+    /// * `event_tx` - An `mpsc::UnboundedSender` for sending `ClientEvent`s generated by the client
+    ///   (e.g., key presses, pointer movements) to other parts of the server.
+    ///
+    /// # Returns
+    ///
+    /// A `Result` which is `Ok(VncClient)` on successful handshake and initialization, or
+    /// `Err(std::io::Error)` if an I/O error occurs during communication or handshake.
+    pub async fn new(
+        mut stream: TcpStream,
+        framebuffer: Framebuffer,
+        desktop_name: String,
+        password: Option<String>,
+        event_tx: mpsc::UnboundedSender<ClientEvent>,
+    ) -> Result<Self, std::io::Error> {
+        // Disable Nagle's algorithm for immediate frame delivery
+        stream.set_nodelay(true)?;
+
+        // Send protocol version
+        stream.write_all(PROTOCOL_VERSION.as_bytes()).await?;
+
+        // Read client protocol version
+        let mut version_buf = vec![0u8; 12];
+        stream.read_exact(&mut version_buf).await?;
+        info!("Client version: {}", String::from_utf8_lossy(&version_buf));
+
+        // Send security types
+        if password.is_some() {
+            stream.write_all(&[1, SECURITY_TYPE_VNC_AUTH]).await?;
+        } else {
+            stream.write_all(&[1, SECURITY_TYPE_NONE]).await?;
+        }
+
+        // Read client's security type choice
+        let mut sec_type = [0u8; 1];
+        stream.read_exact(&mut sec_type).await?;
+
+        // Handle authentication
+        if sec_type[0] == SECURITY_TYPE_VNC_AUTH {
+            let auth = VncAuth::new(password.clone());
+            let challenge = auth.generate_challenge();
+            stream.write_all(&challenge).await?;
+
+            let mut response = vec![0u8; 16];
+            stream.read_exact(&mut response).await?;
+
+            if auth.verify_response(&response, &challenge) {
+                let mut buf = BytesMut::with_capacity(4);
+                buf.put_u32(SECURITY_RESULT_OK);
+                stream.write_all(&buf).await?;
+            } else {
+                let mut buf = BytesMut::with_capacity(4);
+                buf.put_u32(SECURITY_RESULT_FAILED);
+                stream.write_all(&buf).await?;
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "VNC authentication failed",
+                ));
+            }
+
+        } else if sec_type[0] == SECURITY_TYPE_NONE {
+            let mut buf = BytesMut::with_capacity(4);
+            buf.put_u32(SECURITY_RESULT_OK);
+            stream.write_all(&buf).await?;
+        }
+
+        // Read ClientInit
+        let mut shared = [0u8; 1];
+        stream.read_exact(&mut shared).await?;
+
+        // Send ServerInit
+        let server_init = ServerInit {
+            framebuffer_width: framebuffer.width(),
+            framebuffer_height: framebuffer.height(),
+            pixel_format: PixelFormat::rgba32(),
+            name: desktop_name,
+        };
+
+        let mut init_buf = BytesMut::new();
+        server_init.write_to(&mut init_buf);
+        stream.write_all(&init_buf).await?;
+
+        info!("VNC client handshake completed");
+
+        let creation_time = Instant::now();
+
+        Ok(Self {
+            stream,
+            framebuffer,
+            pixel_format: RwLock::new(PixelFormat::rgba32()),
+            encodings: RwLock::new(vec![ENCODING_RAW]),
+            event_tx,
+            last_update_sent: RwLock::new(creation_time),
+            jpeg_quality: AtomicU8::new(80), // Default quality
+            compression_level: AtomicU8::new(6), // Default zlib compression (balanced)
+            continuous_updates: AtomicBool::new(false),
+            modified_regions: Arc::new(RwLock::new(Vec::new())),
+            requested_region: RwLock::new(None),
+            defer_update_time: Duration::from_millis(5), // Match libvncserver default
+            start_deferring_nanos: AtomicU64::new(0), // 0 = not deferring
+            creation_time,
+            max_rects_per_update: 50, // Match libvncserver default
+            send_mutex: Arc::new(tokio::sync::Mutex::new(())),
+            zlib_compressor: RwLock::new(None), // Initialized lazily when first used
+            zrle_compressor: RwLock::new(None), // Initialized lazily when first used
+        })
+    }
+
+    /// Returns a clone of the `Arc` containing the client's `modified_regions`.
+    ///
+    /// This handle is used to register the client with the `Framebuffer` to receive
+    /// dirty region notifications.
+    ///
+    /// # Returns
+    ///
+    /// An `Arc<RwLock<Vec<DirtyRegion>>>` that can be used as a handle for the client's dirty regions.
+    pub fn get_receiver_handle(&self) -> Arc<RwLock<Vec<DirtyRegion>>> {
+        self.modified_regions.clone()
+    }
+
+    /// Enters the main message loop for the VncClient, handling incoming data from the client
+    /// and periodically sending framebuffer updates.
+    ///
+    /// This function continuously reads from the client's `TcpStream` and processes VNC messages
+    /// such as `SetPixelFormat`, `SetEncodings`, `FramebufferUpdateRequest`, `KeyEvent`,
+    /// `PointerEvent`, and `ClientCutText`. It also uses a `tokio::time::interval` to
+    /// periodically check if batched framebuffer updates should be sent to the client,
+    /// based on dirty regions and deferral logic.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` if the client disconnects gracefully.
+    /// Returns `Err(std::io::Error)` if an I/O error occurs or an invalid message is received.
+    pub async fn handle_messages(&mut self) -> Result<(), std::io::Error> {
+        let mut buf = BytesMut::with_capacity(4096);
+        let mut check_interval = tokio::time::interval(tokio::time::Duration::from_millis(16)); // Check for updates ~60 times/sec
+
+        loop {
+            tokio::select! {
+                // Handle incoming client messages
+                result = self.stream.read_buf(&mut buf) => {
+                    if result? == 0 {
+                        let _ = self.event_tx.send(ClientEvent::Disconnected);
+                        return Ok(());
+                    }
+
+                    // Process all available messages in the buffer
+                    while !buf.is_empty() {
+
+                        let msg_type = buf[0];
+
+                        match msg_type {
+                            CLIENT_MSG_SET_PIXEL_FORMAT => {
+                                if buf.len() < 20 { // 1 + 3 padding + 16 pixel format
+                                    break; // Need more data
+                                }
+                                buf.advance(1); // message type
+                                buf.advance(3); // padding
+                                let requested_format = PixelFormat::from_bytes(&mut buf)?;
+
+                                // Validate that client's format is compatible with our RGBA32
+                                if !requested_format.is_compatible_with_rgba32() {
+                                    error!(
+                                        "Client requested incompatible pixel format (bpp={}, depth={}, shifts=R{},G{},B{}). Server only supports RGBA32. Disconnecting.",
+                                        requested_format.bits_per_pixel,
+                                        requested_format.depth,
+                                        requested_format.red_shift,
+                                        requested_format.green_shift,
+                                        requested_format.blue_shift
+                                    );
+                                    let _ = self.event_tx.send(ClientEvent::Disconnected);
+                                    return Err(std::io::Error::new(
+                                        std::io::ErrorKind::InvalidData,
+                                        "Incompatible pixel format requested"
+                                    ));
+                                }
+
+                                *self.pixel_format.write().await = requested_format;
+                                info!("Client set pixel format: RGBA32 (compatible)");
+                            }
+                            CLIENT_MSG_SET_ENCODINGS => {
+                                if buf.len() < 4 { // 1 + 1 padding + 2 count
+                                    break;
+                                }
+                                buf.advance(1); // message type
+                                buf.advance(1); // padding
+                                let count = buf.get_u16() as usize;
+                                if buf.len() < count * 4 {
+                                    break; // Need more data
+                                }
+                                let mut encodings_list = Vec::with_capacity(count);
+                                for _ in 0..count {
+                                    let encoding = buf.get_i32();
+                                    encodings_list.push(encoding);
+
+                                    // Check for quality level pseudo-encodings (-32 to -23)
+                                    if (ENCODING_QUALITY_LEVEL_0..=ENCODING_QUALITY_LEVEL_9).contains(&encoding) {
+                                        // -32 = level 0 (lowest), -23 = level 9 (highest)
+                                        let quality_level = (encoding - ENCODING_QUALITY_LEVEL_0) as u8;
+                                        // Use libvncserver's quality mapping (TigerVNC compatible)
+                                        // Reference: libvncserver/src/libvncserver/rfbserver.c:109
+                                        const TIGHT2TURBO_QUAL: [u8; 10] = [15, 29, 41, 42, 62, 77, 79, 86, 92, 100];
+                                        let quality = TIGHT2TURBO_QUAL[quality_level as usize];
+                                        self.jpeg_quality.store(quality, Ordering::Relaxed);
+                                        info!("Client requested quality level {}, using JPEG quality {}", quality_level, quality);
+                                    }
+
+                                    // Check for compression level pseudo-encodings (-256 to -247)
+                                    if (ENCODING_COMPRESS_LEVEL_0..=ENCODING_COMPRESS_LEVEL_9).contains(&encoding) {
+                                        // -256 = level 0 (lowest/fastest), -247 = level 9 (highest/slowest)
+                                        let compression_level = (encoding - ENCODING_COMPRESS_LEVEL_0) as u8;
+                                        // Use compression level directly (0=fastest, 9=best compression)
+                                        self.compression_level.store(compression_level, Ordering::Relaxed);
+                                        info!("Client requested compression level {}, using zlib level {}", compression_level, compression_level);
+                                    }
+                                }
+                                *self.encodings.write().await = encodings_list.clone();
+                                info!("Client set {} encodings: {:?}", count, encodings_list);
+                            }
+                            CLIENT_MSG_FRAMEBUFFER_UPDATE_REQUEST => {
+                                if buf.len() < 10 { // 1 + 1 incremental + 8 (x, y, w, h)
+                                    break;
+                                }
+                                buf.advance(1); // message type
+                                let incremental = buf.get_u8() != 0;
+                                let x = buf.get_u16();
+                                let y = buf.get_u16();
+                                let width = buf.get_u16();
+                                let height = buf.get_u16();
+
+                                info!("FramebufferUpdateRequest: incremental={}, region=({},{} {}x{})", incremental, x, y, width, height);
+
+                                // Track requested region (libvncserver cl->requestedRegion)
+                                *self.requested_region.write().await = Some(DirtyRegion::new(x, y, width, height));
+
+                                // Enable continuous updates for both incremental and non-incremental requests
+                                // The difference is handled below: non-incremental clears and adds full region
+                                self.continuous_updates.store(true, Ordering::Relaxed);
+
+                                // Handle non-incremental updates (full refresh)
+                                if !incremental {
+                                    // Clear existing regions and mark full requested region as dirty
+                                    let full_region = DirtyRegion::new(x, y, width, height);
+                                    let mut regions = self.modified_regions.write().await;
+                                    regions.clear();
+                                    regions.push(full_region);
+                                    info!("Non-incremental update: added full region to dirty list");
+                                }
+
+                                // Start deferring if we have regions to send
+                                // Note: There's a small window where regions could be drained between
+                                // the check and the store, but this is acceptable - at worst we defer
+                                // when the queue is already empty (harmless). Using a write lock here
+                                // would hurt performance on this hot path.
+                                {
+                                    let regions = self.modified_regions.read().await;
+                                    if !regions.is_empty() && self.start_deferring_nanos.load(Ordering::Relaxed) == 0 {
+                                        // Not currently deferring, start now
+                                        let nanos = Instant::now().duration_since(self.creation_time).as_nanos() as u64;
+                                        self.start_deferring_nanos.store(nanos, Ordering::Relaxed);
+                                    }
+                                }
+                            }
+                            CLIENT_MSG_KEY_EVENT => {
+                                if buf.len() < 8 { // 1 + 1 down + 2 padding + 4 key
+                                    break;
+                                }
+                                buf.advance(1); // message type
+                                let down = buf.get_u8() != 0;
+                                buf.advance(2); // padding
+                                let key = buf.get_u32();
+
+                                let _ = self.event_tx.send(ClientEvent::KeyPress { down, key });
+                            }
+                            CLIENT_MSG_POINTER_EVENT => {
+                                if buf.len() < 6 { // 1 + 1 button + 2 x + 2 y
+                                    break;
+                                }
+                                buf.advance(1); // message type
+                                let button_mask = buf.get_u8();
+                                let x = buf.get_u16();
+                                let y = buf.get_u16();
+
+                                let _ = self.event_tx.send(ClientEvent::PointerMove {
+                                    x,
+                                    y,
+                                    button_mask,
+                                });
+                            }
+                            CLIENT_MSG_CLIENT_CUT_TEXT => {
+                                if buf.len() < 8 { // 1 + 3 padding + 4 length
+                                    break;
+                                }
+                                buf.advance(1); // message type
+                                buf.advance(3); // padding
+                                let length = buf.get_u32() as usize;
+
+                                // Limit clipboard size to prevent memory exhaustion attacks
+                                const MAX_CUT_TEXT: usize = 10 * 1024 * 1024; // 10MB limit
+                                if length > MAX_CUT_TEXT {
+                                    error!("Cut text too large: {} bytes (max {}), disconnecting client", length, MAX_CUT_TEXT);
+                                    let _ = self.event_tx.send(ClientEvent::Disconnected);
+                                    return Err(std::io::Error::new(
+                                        std::io::ErrorKind::InvalidData,
+                                        "Cut text too large"
+                                    ));
+                                }
+
+                                if buf.len() < length {
+                                    break; // Need more data
+                                }
+                                let text_bytes = buf.split_to(length);
+                                if let Ok(text) = String::from_utf8(text_bytes.to_vec()) {
+                                    let _ = self.event_tx.send(ClientEvent::CutText { text });
+                                }
+                            }
+                            _ => {
+                                error!("Unknown message type: {}, disconnecting client", msg_type);
+                                let _ = self.event_tx.send(ClientEvent::Disconnected);
+                                return Err(std::io::Error::new(
+                                    std::io::ErrorKind::InvalidData,
+                                    format!("Unknown message type: {}", msg_type)
+                                ));
+                            }
+                        }
+                    }
+                }
+
+                // Periodically check if we should send updates (libvncserver style)
+                _ = check_interval.tick() => {
+                    let continuous = self.continuous_updates.load(Ordering::Relaxed);
+                    if continuous {
+                        // Check if we have regions and deferral time has elapsed
+                        // Regions are already pushed to us by framebuffer (no merge needed!)
+                        let should_send = {
+                            let regions = self.modified_regions.read().await;
+                            if !regions.is_empty() {
+                                let defer_nanos = self.start_deferring_nanos.load(Ordering::Relaxed);
+                                if defer_nanos == 0 {
+                                    // Not currently deferring, start now
+                                    let nanos = Instant::now().duration_since(self.creation_time).as_nanos() as u64;
+                                    self.start_deferring_nanos.store(nanos, Ordering::Relaxed);
+                                    false // Don't send yet, just started deferring
+                                } else {
+                                    // Check if defer time elapsed
+                                    let defer_start = self.creation_time + Duration::from_nanos(defer_nanos);
+                                    let now = Instant::now();
+                                    let elapsed = now.duration_since(defer_start);
+                                    let last_sent = *self.last_update_sent.read().await;
+                                    let time_since_last = now.duration_since(last_sent);
+                                    let min_interval = Duration::from_millis(33); // ~30 FPS max
+
+                                    elapsed >= self.defer_update_time && time_since_last >= min_interval
+                                }
+                            } else {
+                                false
+                            }
+                        };
+
+                        if should_send {
+                            self.send_batched_update().await?;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Sends a batched framebuffer update message to the client.
+    ///
+    /// This function collects all currently dirty regions for the client, intersects them
+    /// with any client-requested region, and then encodes these regions using the client's
+    /// preferred encoding (e.g., TIGHT, RAW, or COPYRECT).
+    /// The update includes multiple rectangles in a single message to improve efficiency.
+    ///
+    /// # Returns
+    ///
+    /// A `Result` which is `Ok(())` on successful transmission of the update, or
+    /// `Err(std::io::Error)` if an I/O error occurs during encoding or sending.
+    async fn send_batched_update(&mut self) -> Result<(), std::io::Error> {
+        // Get requested region (libvncserver: requestedRegion)
+        let requested = *self.requested_region.read().await;
+
+        info!("send_batched_update called, requested region: {:?}", requested);
+
+        // Get regions to send, intersected with requested region (libvncserver style)
+        // This implements: updateRegion = requestedRegion ∩ modifiedRegion
+        let regions_to_send: Vec<DirtyRegion> = {
+            let mut regions = self.modified_regions.write().await;
+            info!("Modified regions count: {}", regions.len());
+            if regions.is_empty() {
+                info!("No modified regions, skipping update");
+                return Ok(());
+            }
+
+            // Drain and filter regions, keeping only those that intersect with requested region
+            let num_rects = regions.len().min(self.max_rects_per_update);
+            let drained: Vec<DirtyRegion> = regions.drain(..num_rects).collect();
+
+            if let Some(req) = requested {
+                // Intersect each modified region with requested region
+                drained.iter()
+                    .filter_map(|region| region.intersect(&req))
+                    .collect()
+            } else {
+                // No requested region set, send all modified regions (shouldn't happen normally)
+                drained
+            }
+        };
+
+        // If no regions after intersection, nothing to send
+        if regions_to_send.is_empty() {
+            return Ok(());
+        }
+
+        let start = Instant::now();
+        let num_rects = regions_to_send.len();
+
+        let mut response = BytesMut::new();
+
+        // Message type
+        response.put_u8(SERVER_MSG_FRAMEBUFFER_UPDATE);
+        response.put_u8(0); // padding
+        response.put_u16(num_rects as u16); // number of rectangles
+
+        // Choose best encoding supported by client
+        let encodings = self.encodings.read().await;
+        // Temporarily prioritize ZLIB over TIGHT to test JPEG encoder compatibility
+        let preferred_encoding = if encodings.contains(&ENCODING_ZLIB) {
+            ENCODING_ZLIB
+        } else if encodings.contains(&ENCODING_TIGHT) {
+            ENCODING_TIGHT
+        } else if encodings.contains(&ENCODING_HEXTILE) {
+            ENCODING_HEXTILE
+        } else {
+            ENCODING_RAW
+        };
+        let use_copyrect = encodings.contains(&ENCODING_COPYRECT);
+        drop(encodings); // Release lock
+
+        let mut encoding_name = match preferred_encoding {
+            ENCODING_TIGHT => "TIGHT",
+            ENCODING_ZRLE => "ZRLE",
+            ENCODING_ZLIB => "ZLIB",
+            _ => "RAW",
+        };
+
+        let mut total_pixels = 0u64;
+
+        // Load quality/compression settings atomically
+        let jpeg_quality = self.jpeg_quality.load(Ordering::Relaxed);
+        let compression_level = self.compression_level.load(Ordering::Relaxed);
+
+        // Send each dirty region as a rectangle
+        for region in &regions_to_send {
+            // Try to detect if this is a copy operation (for CopyRect encoding)
+
+            if use_copyrect {
+                if let Some((src_x, src_y)) = self.framebuffer.detect_copy_rect(region).await {
+                    // Use CopyRect encoding
+                    let rect = Rectangle {
+                        x: region.x,
+                        y: region.y,
+                        width: region.width,
+                        height: region.height,
+                        encoding: ENCODING_COPYRECT,
+                    };
+                    rect.write_header(&mut response);
+
+                    // CopyRect data is just src_x and src_y
+                    response.put_u16(src_x);
+                    response.put_u16(src_y);
+
+                    total_pixels += (region.width as u64) * (region.height as u64);
+                    continue;
+                }
+            }
+
+            // Get pixel data
+            let pixel_data = match self.framebuffer.get_rect(region.x, region.y, region.width, region.height).await {
+                Ok(data) => data,
+                Err(e) => {
+                    error!("Failed to get rectangle ({}, {}, {}, {}): {}",
+                           region.x, region.y, region.width, region.height, e);
+                    continue; // Skip this invalid rectangle
+                }
+            };
+
+            // Encode using selected encoding with fallback to RAW
+            // ZLIB requires persistent compressor per RFC 6143
+            let (actual_encoding, encoded) = if preferred_encoding == ENCODING_ZLIB {
+                // Initialize ZLIB compressor lazily on first use
+                let mut zlib_lock = self.zlib_compressor.write().await;
+                if zlib_lock.is_none() {
+                    *zlib_lock = Some(Compress::new(Compression::new(compression_level as u32), true));
+                    info!("Initialized ZLIB compressor with level {}", compression_level);
+                }
+                let zlib_comp = zlib_lock.as_mut().unwrap();
+
+                match encoding::encode_zlib_persistent(&pixel_data, zlib_comp) {
+                    Ok(data) => (ENCODING_ZLIB, BytesMut::from(&data[..])),
+                    Err(e) => {
+                        error!("ZLIB encoding failed: {}, falling back to RAW", e);
+                        encoding_name = "RAW";
+                        if let Some(raw_encoder) = encoding::get_encoder(ENCODING_RAW) {
+                            (ENCODING_RAW, raw_encoder.encode(&pixel_data, region.width, region.height, jpeg_quality, compression_level))
+                        } else {
+                            (ENCODING_RAW, BytesMut::new())
+                        }
+                    }
+                }
+            } else if let Some(encoder) = encoding::get_encoder(preferred_encoding) {
+                (preferred_encoding, encoder.encode(&pixel_data, region.width, region.height, jpeg_quality, compression_level))
+            } else {
+                // Fallback to RAW encoding if preferred encoding is not available
+                error!("Encoding {} not available, falling back to RAW", preferred_encoding);
+                encoding_name = "RAW"; // Update encoding name to reflect fallback
+                if let Some(raw_encoder) = encoding::get_encoder(ENCODING_RAW) {
+                    (ENCODING_RAW, raw_encoder.encode(&pixel_data, region.width, region.height, jpeg_quality, compression_level))
+                } else {
+                    error!("RAW encoding also not available, this should never happen!");
+                    (preferred_encoding, BytesMut::new())
+                }
+            };
+
+            // Write rectangle header with actual encoding used
+            let rect = Rectangle {
+                x: region.x,
+                y: region.y,
+                width: region.width,
+                height: region.height,
+                encoding: actual_encoding,
+            };
+            rect.write_header(&mut response);
+            response.extend_from_slice(&encoded);
+
+            total_pixels += (region.width as u64) * (region.height as u64);
+        }
+
+        // Acquire send mutex to prevent interleaved writes
+        let _lock = self.send_mutex.lock().await;
+        self.stream.write_all(&response).await?;
+        drop(_lock);
+
+        // Reset deferral timer and update last sent time
+        self.start_deferring_nanos.store(0, Ordering::Relaxed); // Reset deferral
+        *self.last_update_sent.write().await = Instant::now();
+
+        let elapsed = start.elapsed();
+        info!(
+            "Sent {} rects ({} pixels total) using {} ({} bytes, {}ms encode+send)",
+            num_rects, total_pixels, encoding_name, response.len(), elapsed.as_millis()
+        );
+
+        Ok(())
+    }
+
+    /// Sends a `ServerCutText` message to the client, updating its clipboard.
+    ///
+    /// # Arguments
+    ///
+    /// * `text` - The string to be sent as the clipboard content.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` on successful transmission, or `Err(std::io::Error)` if an I/O error occurs.
+    pub async fn send_cut_text(&mut self, text: String) -> Result<(), std::io::Error> {
+        let mut msg = BytesMut::new();
+        msg.put_u8(SERVER_MSG_SERVER_CUT_TEXT);
+        msg.put_bytes(0, 3); // padding
+        msg.put_u32(text.len() as u32);
+        msg.put_slice(text.as_bytes());
+
+        // Acquire send mutex to prevent interleaved writes
+        let _lock = self.send_mutex.lock().await;
+        self.stream.write_all(&msg).await?;
+        Ok(())
+    }
+}

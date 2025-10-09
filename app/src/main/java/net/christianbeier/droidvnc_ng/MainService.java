@@ -200,9 +200,12 @@ public class MainService extends Service {
     };
 
     static {
-        // order is important here
-        System.loadLibrary("droidvnc-ng");
+        // Load Rust VNC library
+        System.loadLibrary("droidvnc_ng");
     }
+
+    // Initialize Rust VNC server runtime (must be called before using other native methods)
+    private static native void vncInit();
 
     @SuppressWarnings("BooleanMethodIsAlwaysInverted")
     private native boolean vncStartServer(int width, int height, int port, String desktopName, String password, String httpRootDir);
@@ -228,6 +231,9 @@ public class MainService extends Service {
     @Override
     public void onCreate() {
         Log.d(TAG, "onCreate");
+
+        // Initialize Rust VNC runtime first
+        vncInit();
 
         instance = this;
 
