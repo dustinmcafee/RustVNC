@@ -16,13 +16,6 @@ android {
 
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
 
-        externalNativeBuild {
-            cmake {
-                // specify explicit target list to exclude examples, tests, utils. etc from used libraries
-                targets "turbojpeg-static", "vncserver", "droidvnc-ng"
-            }
-        }
-
         ndk {
             debugSymbolLevel = 'FULL'
         }
@@ -36,12 +29,6 @@ android {
         }
     }
 
-    externalNativeBuild {
-        cmake {
-            version '3.22.1'
-            path 'src/main/cpp/CMakeLists.txt'
-        }
-    }
     namespace 'net.christianbeier.droidvnc_ng'
 
     compileOptions {
@@ -53,6 +40,83 @@ android {
     }
     buildFeatures {
         buildConfig true
+    }
+}
+
+tasks.register('buildRust', Exec) {
+    description "Builds Rust VNC library for all Android ABIs"
+    group "build"
+
+    def abiMap = [
+        "armeabi-v7a": "armv7-linux-androideabi",
+        "arm64-v8a"  : "aarch64-linux-android",
+        "x86"        : "i686-linux-android",
+        "x86_64"     : "x86_64-linux-android"
+    ]
+
+    def rustProjectPath = "${project.projectDir}/src/main/rust"
+    def ndkDir = android.ndkDirectory.absolutePath
+    def androidApiLevel = android.defaultConfig.minSdk
+
+    inputs.dir rustProjectPath
+    outputs.dir "${project.projectDir}/src/main/jniLibs"
+
+    doFirst {
+        println "Building Rust VNC library for Android NDK: ${ndkDir}"
+        println "Rust project path: ${rustProjectPath}"
+        println "Android API Level for NDK: ${androidApiLevel}"
+    }
+
+    def shellCommands = abiMap.collect { abi, targetTriple ->
+        def toolchainBinDir = "${ndkDir}/toolchains/llvm/prebuilt/linux-x86_64/bin"
+        def currentPath = System.getenv('PATH')
+
+        """
+        echo "Building for ABI: ${abi} (Target: ${targetTriple})"
+
+        export TOOLCHAIN_BIN_DIR="${toolchainBinDir}"
+        export TARGET_CC="${toolchainBinDir}/${targetTriple}${androidApiLevel}-clang"
+        export TARGET_CXX="${toolchainBinDir}/${targetTriple}${androidApiLevel}-clang++"
+        export TARGET_AR="${toolchainBinDir}/llvm-ar"
+        export TARGET_RANLIB="${toolchainBinDir}/llvm-ranlib"
+        export PATH="${toolchainBinDir}:${currentPath}"
+        export ANDROID_NDK_ROOT="${ndkDir}"
+        export NDK_TOOLCHAIN_VERSION="clang"
+        export NDK_API_LEVEL="${androidApiLevel}"
+
+        rustup target add ${targetTriple} || true
+
+        cd "${rustProjectPath}"
+        cargo ndk -t ${abi} -o target/${targetTriple}/release build --target ${targetTriple} --release
+
+        mkdir -p "${project.projectDir}/src/main/jniLibs/${abi}/"
+        if [ -f "target/${targetTriple}/release/libdroidvnc_ng.so" ]; then
+            cp "target/${targetTriple}/release/libdroidvnc_ng.so" "${project.projectDir}/src/main/jniLibs/${abi}/"
+            echo "Copied Rust library to ${project.projectDir}/src/main/jniLibs/${abi}/"
+        else
+            echo "ERROR: libdroidvnc_ng.so not found after build for ${abi}. Rust compilation likely failed."
+            exit 1
+        fi
+        """.stripIndent()
+    }.join('\n')
+
+    commandLine 'bash', '-c', shellCommands
+}
+
+// Ensure Rust builds before CMake and assembling APK
+tasks.whenTaskAdded { task ->
+    if (task.name == 'assembleDebug' || task.name == 'assembleRelease') {
+        task.dependsOn buildRust
+    }
+    if (task.name.contains('mergeDebugJniLibFolders') || task.name.contains('mergeReleaseJniLibFolders')) {
+        task.dependsOn buildRust
+    }
+    if (task.name.contains('preBuild')) {
+        task.dependsOn buildRust
+    }
+    // Make sure Rust builds before CMake configures
+    if (task.name.contains('externalNativeBuild')) {
+        task.dependsOn buildRust
     }
 }
 
