@@ -37,20 +37,7 @@ This document tracks the migration from libvncserver (C) to a pure Rust VNC impl
 | Clipboard | `send_cut_text_to_all()` | ✅ |
 | File Transfer | Not implemented | ⚠️ Not used in MainService |
 
-### 3. Code Migration
-**Status:** ✅ Complete
-
-- ✅ Copied VNC module from elovnc to droidVNC-NG
-- ✅ Updated JNI package names:
-  - FROM: `com.elo.vnc.VncServerRust`
-  - TO: `net.christianbeier.droidvnc_ng.MainService`
-- ✅ Simplified `lib.rs` (removed TCP-to-WebSocket proxy)
-- ✅ Updated `Cargo.toml`:
-  - Package name: `droidvnc-ng`
-  - Library name: `droidvnc_ng`
-  - Removed unnecessary dependencies
-
-### 4. Build System Integration
+### 3. Build System Integration
 **Status:** ✅ Complete
 
 **File:** `app/build.gradle`
@@ -70,7 +57,7 @@ This document tracks the migration from libvncserver (C) to a pure Rust VNC impl
   - Deleted `externalNativeBuild` sections
   - Rust provides all native functionality via JNI
 
-### 5. Java/Kotlin Code Updates
+### 4. Java/Kotlin Code Updates
 **Status:** ✅ Complete
 
 **File:** `app/src/main/java/net/christianbeier/droidvnc_ng/MainService.java`
@@ -85,46 +72,6 @@ This document tracks the migration from libvncserver (C) to a pure Rust VNC impl
 - ✅ Added `vncInit()` call in `onCreate()` (line 227):
   - Initializes Rust runtime, logging, and JNI class references
   - Called before any other VNC operations
-
----
-
-## 📋 Remaining Tasks
-
-### 1. Remove Old C/C++ Code
-**Status:** ⚠️ Pending
-**Priority:** MEDIUM (can be done after testing)
-
-**Files/Directories to Remove:**
-- `app/src/main/cpp/` (entire directory)
-- Remove from `.gitmodules`:
-  ```
-  [submodule "libvncserver"]
-  [submodule "libjpeg-turbo"]
-  ```
-- Remove submodule directories:
-  ```bash
-  git rm libvncserver
-  git rm libjpeg-turbo
-  ```
-
-### 2. Testing & Validation
-**Status:** ⚠️ Pending
-**Priority:** HIGH
-
-**Test Checklist:**
-- [ ] Server starts successfully
-- [ ] Screen mirroring works
-- [ ] Mouse/touch input forwarding
-- [ ] Keyboard input forwarding
-- [ ] Clipboard sync (both directions)
-- [ ] Multiple clients simultaneously
-- [ ] Password authentication
-- [ ] Reverse connections
-- [ ] Repeater connections
-- [ ] Screen rotation/resize
-- [ ] Performance benchmarks
-
----
 
 ## 🔧 Build Instructions
 
@@ -232,8 +179,3 @@ cargo clippy # Lint warnings
 - **Min Android API:** 24 (unchanged from original)
 - **NDK Version:** Compatible with NDK r23+
 
----
-
-**Migration Completed:** $(date)
-**Rust Version:** 1.76+
-**Cargo-NDK Version:** 3.0+

@@ -5,7 +5,6 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.util.Log
-import androidx.core.content.ContextCompat
 
 /*
  * Broadcast receiver that's being triggered when the package is replaced/updated.
@@ -41,7 +40,11 @@ class OnPackageReplacedReceiver : BroadcastReceiver() {
                     }
                 } else {
                     // start immediately
-                    ContextCompat.startForegroundService(context.applicationContext, intent!!)
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        context.applicationContext.startForegroundService(intent)
+                    } else {
+                        context.applicationContext.startService(intent)
+                    }
                 }
             } else {
                 Log.i(TAG, "onReceive: server was not running before, not restarting")

@@ -315,8 +315,6 @@ pub extern "system" fn Java_net_christianbeier_droidvnc_1ng_MainService_vncStopS
 /// * `env` - The JNI environment.
 /// * `_class` - The Java class from which this method is called.
 /// * `buffer` - A Java `DirectByteBuffer` containing the new RGBA framebuffer data.
-/// * `width` - The width of the framebuffer.
-/// * `height` - The height of the framebuffer.
 ///
 /// # Returns
 ///
@@ -327,8 +325,6 @@ pub extern "system" fn Java_net_christianbeier_droidvnc_1ng_MainService_vncUpdat
     env: JNIEnv,
     _class: JClass,
     buffer: JObject,
-    width: jint,
-    height: jint,
 ) -> jboolean {
     let buffer_ptr = match env.get_direct_buffer_address((&buffer).into()) {
         Ok(ptr) => ptr,
@@ -346,28 +342,8 @@ pub extern "system" fn Java_net_christianbeier_droidvnc_1ng_MainService_vncUpdat
         }
     };
 
-    // Validate dimensions and calculate size with overflow protection (R3)
-    const MAX_DIMENSION: i32 = 8192;
-
-    if width <= 0 || height <= 0 || width > MAX_DIMENSION || height > MAX_DIMENSION {
-        error!("Invalid dimensions: {}x{} (must be 1-{})", width, height, MAX_DIMENSION);
-        return JNI_FALSE;
-    }
-
-    // Use checked multiplication to prevent overflow
-    let expected_size = (width as usize)
-        .checked_mul(height as usize)
-        .and_then(|s| s.checked_mul(4))
-        .unwrap_or_else(|| {
-            error!("Framebuffer size overflow: {}x{}", width, height);
-            0
-        });
-
-    if expected_size == 0 || buffer_capacity != expected_size {
-        error!(
-            "Buffer size mismatch: expected {}, got {}",
-            expected_size, buffer_capacity
-        );
+    if buffer_capacity < 0 {
+        error!("Invalid buffer capacity: {}", buffer_capacity);
         return JNI_FALSE;
     }
 
@@ -375,7 +351,7 @@ pub extern "system" fn Java_net_christianbeier_droidvnc_1ng_MainService_vncUpdat
     // Java GC could move/free the buffer while we're using it
     let buffer_copy = {
         let buffer_slice = unsafe {
-            std::slice::from_raw_parts(buffer_ptr, buffer_capacity)
+            std::slice::from_raw_parts(buffer_ptr, buffer_capacity as usize)
         };
         buffer_slice.to_vec()
     };

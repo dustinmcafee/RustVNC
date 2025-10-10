@@ -29,23 +29,14 @@ import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.content.res.Resources;
-import android.net.ConnectivityManager;
-import android.net.LinkProperties;
-import android.net.Network;
-import android.net.NetworkRequest;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 
-import androidx.activity.EdgeToEdge;
 import androidx.annotation.NonNull;
 import androidx.core.content.ContextCompat;
-import androidx.core.os.ConfigurationCompat;
-import androidx.core.text.BidiFormatter;
 import androidx.preference.PreferenceManager;
 
-import android.os.Handler;
-import android.os.Looper;
 import android.provider.Settings;
 import android.text.Editable;
 import android.text.InputType;
@@ -76,7 +67,6 @@ import com.google.android.material.switchmaterial.SwitchMaterial;
 
 import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.Objects;
 import java.util.UUID;
 
 public class MainActivity extends AppCompatActivity {
@@ -98,20 +88,11 @@ public class MainActivity extends AppCompatActivity {
     private int mLastRepeaterPort;
     private String mLastRepeaterId;
     private Defaults mDefaults;
-    private ConnectivityManager.NetworkCallback mNetworkCallback;
-    private BroadcastReceiver mWifiApStateChangedReceiver;
-    private final Handler mClientListHandler = new Handler(Looper.getMainLooper());
-    private BroadcastReceiver mClientListBroadcastReceiver;
+
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        // On Android 15 and later, calling enableEdgeToEdge ensures system bar icon colors update
-        // when the device theme changes. Because calling it on pre-Android 15 has the side effect of
-        // enabling EdgeToEdge there as well, we only use it on Android 15 and later.
-        if (Build.VERSION.SDK_INT >= 35) {
-            EdgeToEdge.enable(this);
-        }
         setContentView(R.layout.activity_main);
 
         final SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(this);
@@ -136,23 +117,12 @@ public class MainActivity extends AppCompatActivity {
             }
             mButtonToggle.setEnabled(false);
 
-            ContextCompat.startForegroundService(MainActivity.this, intent);
-
-        });
-
-        Button buttonSurvey = findViewById(R.id.survey);
-        buttonSurvey.setOnClickListener(view -> {
-            Intent intent = new Intent(this, WebViewActivity.class);
-            String url = getString(R.string.survey_url);
-            try {
-                if (!Objects.requireNonNull(ConfigurationCompat.getLocales(getResources().getConfiguration()).get(0)).getLanguage().equals("en")) {
-                    url = "https://translate.google.com/translate?sl=en&u=" + url;
-                }
-            } catch (Exception ignored) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(intent);
+            } else {
+                startService(intent);
             }
-            intent.putExtra(WebViewActivity.EXTRA_URL, url);
-            intent.putExtra(WebViewActivity.EXTRA_TITLE, getString(R.string.main_activity_survey_button));
-            startActivity(intent);
+
         });
 
         mAddress = findViewById(R.id.address);
@@ -217,7 +187,11 @@ public class MainActivity extends AppCompatActivity {
                             request.putExtra(MainService.EXTRA_RECONNECT_TRIES, Integer.parseInt(reconnectTriesInputText.getText().toString()));
                         } catch (NumberFormatException ignored) {
                         }
-                        ContextCompat.startForegroundService(MainActivity.this, request);
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                            startForegroundService(request);
+                        } else {
+                            startService(request);
+                        }
 
                         // show a progress dialog
                         ProgressBar progressBar = new ProgressBar(this);
@@ -225,7 +199,7 @@ public class MainActivity extends AppCompatActivity {
                         mOutgoingConnectionWaitDialog = new AlertDialog.Builder(this)
                                 .setCancelable(false)
                                 .setTitle(R.string.main_activity_reverse_vnc_button)
-                                .setMessage(getString(R.string.main_activity_connecting_to, BidiFormatter.getInstance().unicodeWrap(host + ":" + port)))
+                                .setMessage(getString(R.string.main_activity_connecting_to, host + ":" + port))
                                 .setView(progressBar)
                                 .show();
                     })
@@ -309,14 +283,18 @@ public class MainActivity extends AppCompatActivity {
                             request.putExtra(MainService.EXTRA_RECONNECT_TRIES, Integer.parseInt(reconnectTriesInputText.getText().toString()));
                         } catch (NumberFormatException ignored) {
                         }
-                        ContextCompat.startForegroundService(MainActivity.this, request);
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                            startForegroundService(request);
+                        } else {
+                            startService(request);
+                        }
                         // show a progress dialog
                         ProgressBar progressBar = new ProgressBar(this);
                         progressBar.setPadding(0,0,0, (int) (30 * getResources().getDisplayMetrics().density));
                         mOutgoingConnectionWaitDialog = new AlertDialog.Builder(this)
                                 .setCancelable(false)
                                 .setTitle(R.string.main_activity_repeater_vnc_button)
-                                .setMessage(getString(R.string.main_activity_connecting_to, BidiFormatter.getInstance().unicodeWrap(host + ":" + port + " - " + repeaterId)))
+                                .setMessage(getString(R.string.main_activity_connecting_to, host + ":" + port + " - " + repeaterId))
                                 .setView(progressBar)
                                 .show();
                     })
@@ -575,7 +553,8 @@ public class MainActivity extends AppCompatActivity {
                     if (intent.getBooleanExtra(MainService.EXTRA_REQUEST_SUCCESS, false)) {
                         Toast.makeText(MainActivity.this,
                                         getString(R.string.main_activity_reverse_vnc_success,
-                                                BidiFormatter.getInstance().unicodeWrap(mLastReverseHost + ":" + mLastReversePort)),
+                                                mLastReverseHost,
+                                                mLastReversePort),
                                         Toast.LENGTH_LONG)
                                 .show();
                         SharedPreferences.Editor ed = prefs.edit();
@@ -585,7 +564,8 @@ public class MainActivity extends AppCompatActivity {
                     } else
                         Toast.makeText(MainActivity.this,
                                         getString(R.string.main_activity_reverse_vnc_fail,
-                                                BidiFormatter.getInstance().unicodeWrap(mLastReverseHost + ":" + mLastReversePort)),
+                                                mLastReverseHost,
+                                                mLastReversePort),
                                         Toast.LENGTH_LONG)
                                 .show();
 
@@ -604,7 +584,8 @@ public class MainActivity extends AppCompatActivity {
                     if (intent.getBooleanExtra(MainService.EXTRA_REQUEST_SUCCESS, false)) {
                         Toast.makeText(MainActivity.this,
                                         getString(R.string.main_activity_repeater_vnc_success,
-                                                BidiFormatter.getInstance().unicodeWrap(mLastRepeaterHost + ":" + mLastRepeaterPort),
+                                                mLastRepeaterHost,
+                                                mLastRepeaterPort,
                                                 mLastRepeaterId),
                                         Toast.LENGTH_LONG)
                                 .show();
@@ -618,7 +599,8 @@ public class MainActivity extends AppCompatActivity {
                     else
                         Toast.makeText(MainActivity.this,
                                         getString(R.string.main_activity_repeater_vnc_fail,
-                                                BidiFormatter.getInstance().unicodeWrap(mLastRepeaterHost + ":" + mLastRepeaterPort),
+                                                mLastRepeaterHost,
+                                                mLastRepeaterPort,
                                                 mLastRepeaterId),
                                         Toast.LENGTH_LONG)
                                 .show();
@@ -644,50 +626,7 @@ public class MainActivity extends AppCompatActivity {
         // for instance
         ContextCompat.registerReceiver(this, mMainServiceBroadcastReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED);
 
-        /*
-            Let UI update on any network interface changes.
-         */
-        // Client networks
-        mNetworkCallback = new ConnectivityManager.NetworkCallback() {
-            @Override
-            public void onAvailable(@NonNull Network network) {
-                Log.d(TAG, "NetworkCallback onAvailable");
-                updateAddressesDisplay();
-            }
-
-            @Override
-            public void onLinkPropertiesChanged(@NonNull Network network, @NonNull LinkProperties linkProperties) {
-                Log.d(TAG, "NetworkCallback onLinkPropertiesChanged");
-                updateAddressesDisplay();
-            }
-
-
-            @Override
-            public void onLost(@NonNull Network network) {
-                Log.d(TAG, "NetworkCallback onLost");
-                updateAddressesDisplay();
-            }
-        };
-        ((ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE)).registerNetworkCallback(
-                new NetworkRequest.Builder().build(),
-                mNetworkCallback);
-        // Access Points opened by us
-        mWifiApStateChangedReceiver = new BroadcastReceiver() {
-            @Override
-            public void onReceive(Context context, Intent intent) {
-                Log.d(TAG, "WIFI_AP_STATE_CHANGED");
-                updateAddressesDisplay();
-            }
-        };
-        ContextCompat.registerReceiver(
-                this,
-                mWifiApStateChangedReceiver,
-                new IntentFilter("android.net.wifi.WIFI_AP_STATE_CHANGED"),
-                ContextCompat.RECEIVER_EXPORTED);
-
-        /*
-            setup UI initial state
-         */
+        // setup UI initial state
         if (MainService.isServerActive()) {
             Log.d(TAG, "Found server to be started");
             onServerStarted();
@@ -707,18 +646,8 @@ public class MainActivity extends AppCompatActivity {
     }
 
     @Override
-    protected void onPause() {
-        super.onPause();
-        Log.d(TAG, "onPause");
-        stopGettingClientList();
-    }
-
-    @Override
     protected void onResume() {
         super.onResume();
-        if (MainService.isServerActive()) {
-            startGettingClientList();
-        }
         // onResume() is needed on API levels earlier than 26
         if(Build.VERSION.SDK_INT < 26) {
             updatePermissionsDisplay();
@@ -820,10 +749,15 @@ public class MainActivity extends AppCompatActivity {
                 startOnBootStatus.setText(R.string.main_activity_denied);
                 startOnBootStatus.setTextColor(getColor(R.color.denied));
                 // wire this up only for denied status
-                startOnBootStatus.setOnClickListener(view -> InputRequestActivity.requestIfNeededAndPostResult(this,
-                        false,
-                        PreferenceManager.getDefaultSharedPreferences(this).getBoolean(Constants.PREFS_KEY_SETTINGS_START_ON_BOOT, mDefaults.getStartOnBoot()),
-                        true));
+                startOnBootStatus.setOnClickListener(view -> {
+                    if (PreferenceManager.getDefaultSharedPreferences(this).getBoolean(Constants.PREFS_KEY_SETTINGS_START_ON_BOOT, mDefaults.getStartOnBoot()))
+                    {
+                        Intent inputRequestIntent = new Intent(this, InputRequestActivity.class);
+                        inputRequestIntent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                        inputRequestIntent.putExtra(InputRequestActivity.EXTRA_DO_NOT_START_MAIN_SERVICE_ON_FINISH, true);
+                        startActivity(inputRequestIntent);
+                    }
+                });
             }
         } else {
             findViewById(R.id.permission_row_start_on_boot).setVisibility(View.GONE);
@@ -831,15 +765,20 @@ public class MainActivity extends AppCompatActivity {
 
     }
 
-    private void updateAddressesDisplay() {
-        Log.d(TAG, "updateAddressesDisplay: " + MainService.isServerActive());
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        Log.d(TAG, "onDestroy");
+        unregisterReceiver(mMainServiceBroadcastReceiver);
+    }
 
-        if(!MainService.isServerActive()) {
-            mAddress.setVisibility(View.GONE);
-            return;
-        }
-
-        mAddress.setVisibility(View.VISIBLE);
+    private void onServerStarted() {
+        mButtonToggle.post(() -> {
+            mButtonToggle.setText(R.string.stop);
+            mButtonToggle.setEnabled(true);
+            // let focus stay on button
+            mButtonToggle.requestFocus();
+        });
 
         if(MainService.getPort() >= 0) {
             HashMap<ClickableSpan, Pair<Integer,Integer>> spans = new HashMap<>();
@@ -847,30 +786,26 @@ public class MainActivity extends AppCompatActivity {
             ArrayList<String> hosts = MainService.getIPv4s();
             StringBuilder sb = new StringBuilder();
             sb.append(getString(R.string.main_activity_address)).append(" ");
-            if(hosts.isEmpty()) {
-                sb.append("localhost");
-            } else {
-                for (int i = 0; i < hosts.size(); ++i) {
-                    String host = hosts.get(i);
-                    sb.append(host).append(":").append(MainService.getPort()).append(" (");
-                    int start = sb.length();
-                    sb.append(getString(R.string.main_activity_share_link));
-                    ClickableSpan clickableSpan = new ClickableSpan() {
-                        @Override
-                        public void onClick(@NonNull View widget) {
-                            Intent sendIntent = new Intent();
-                            sendIntent.setAction(Intent.ACTION_SEND);
-                            sendIntent.putExtra(Intent.EXTRA_TEXT,
-                                    "http://" + host + ":" + (MainService.getPort() - 100) + "/vnc.html?autoconnect=true&show_dot=true&&host=" + host + "&port=" + MainService.getPort());
-                            sendIntent.setType("text/plain");
-                            startActivity(Intent.createChooser(sendIntent, null));
-                        }
-                    };
-                    spans.put(clickableSpan, Pair.create(start, sb.length()));
-                    sb.append(")");
-                    if (i != hosts.size() - 1)
-                        sb.append(" ").append(getString(R.string.or)).append(" ");
-                }
+            for (int i = 0; i < hosts.size(); ++i) {
+                String host = hosts.get(i);
+                sb.append(host).append(":").append(MainService.getPort()).append(" (");
+                int start = sb.length();
+                sb.append(getString(R.string.main_activity_share_link));
+                ClickableSpan clickableSpan = new ClickableSpan() {
+                    @Override
+                    public void onClick(@NonNull View widget) {
+                        Intent sendIntent = new Intent();
+                        sendIntent.setAction(Intent.ACTION_SEND);
+                        sendIntent.putExtra(Intent.EXTRA_TEXT,
+                                "http://" + host + ":" + (MainService.getPort() - 100) + "/vnc.html?autoconnect=true&show_dot=true&&host=" + host + "&port=" + MainService.getPort());
+                        sendIntent.setType("text/plain");
+                        startActivity(Intent.createChooser(sendIntent, null));
+                    }
+                };
+                spans.put(clickableSpan, Pair.create(start, sb.length()));
+                sb.append(")");
+                if (i != hosts.size() - 1)
+                    sb.append(" ").append(getString(R.string.or)).append(" ");
             }
             sb.append(".");
             // done with string and span creation, put it all together
@@ -883,26 +818,6 @@ public class MainActivity extends AppCompatActivity {
         } else {
             mAddress.post(() -> mAddress.setText(R.string.main_activity_not_listening));
         }
-    }
-
-    @Override
-    protected void onDestroy() {
-        super.onDestroy();
-        Log.d(TAG, "onDestroy");
-        unregisterReceiver(mMainServiceBroadcastReceiver);
-        ((ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE)).unregisterNetworkCallback(mNetworkCallback);
-        unregisterReceiver(mWifiApStateChangedReceiver);
-    }
-
-    private void onServerStarted() {
-        mButtonToggle.post(() -> {
-            mButtonToggle.setText(R.string.stop);
-            mButtonToggle.setEnabled(true);
-            // let focus stay on button
-            mButtonToggle.requestFocus();
-        });
-
-        updateAddressesDisplay();
 
         // show outbound connection interface
         findViewById(R.id.outbound_text).setVisibility(View.VISIBLE);
@@ -917,8 +832,6 @@ public class MainActivity extends AppCompatActivity {
         findViewById(R.id.settings_file_transfer).setEnabled(false);
         findViewById(R.id.settings_show_pointers).setEnabled(false);
 
-        startGettingClientList();
-
         mIsMainServiceRunning = true;
     }
 
@@ -929,8 +842,7 @@ public class MainActivity extends AppCompatActivity {
             // let focus stay on button
             mButtonToggle.requestFocus();
         });
-
-        updateAddressesDisplay();
+        mAddress.post(() -> mAddress.setText(""));
 
         // hide outbound connection interface
         findViewById(R.id.outbound_text).setVisibility(View.GONE);
@@ -948,50 +860,7 @@ public class MainActivity extends AppCompatActivity {
             findViewById(R.id.settings_show_pointers).setEnabled(true);
         }
 
-        stopGettingClientList();
-
         mIsMainServiceRunning = false;
-    }
-
-    private void startGettingClientList() {
-        stopGettingClientList();
-
-        mClientListBroadcastReceiver = new BroadcastReceiver() {
-            @Override
-            public void onReceive(Context context, Intent intent) {
-                //TODO actually display
-            }
-        };
-        ContextCompat.registerReceiver(
-                this,
-                mClientListBroadcastReceiver,
-                new IntentFilter(MainService.ACTION_GET_CLIENTS),
-                ContextCompat.RECEIVER_NOT_EXPORTED);
-
-        mClientListHandler.postDelayed(new Runnable() {
-            @Override
-            public void run() {
-                final SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(MainActivity.this);
-
-                Intent intent = new Intent(MainActivity.this, MainService.class);
-                intent.setAction(MainService.ACTION_GET_CLIENTS);
-                intent.putExtra(MainService.EXTRA_ACCESS_KEY, prefs.getString(Constants.PREFS_KEY_SETTINGS_ACCESS_KEY, mDefaults.getAccessKey()));
-                intent.putExtra(MainService.EXTRA_RECEIVER, getPackageName());
-
-                ContextCompat.startForegroundService(MainActivity.this, intent);
-
-                mClientListHandler.postDelayed(this, 1000);
-            }
-        }, 1000);
-    }
-
-    private void stopGettingClientList() {
-        mClientListHandler.removeCallbacksAndMessages(null);
-        try {
-            unregisterReceiver(mClientListBroadcastReceiver);
-        } catch (IllegalArgumentException unused) {
-            // not registered
-        }
     }
 
 }
