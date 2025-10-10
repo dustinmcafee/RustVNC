@@ -16,7 +16,7 @@ pub struct TightEncoding;
 
 impl Encoding for TightEncoding {
     fn encode(&self, data: &[u8], width: u16, height: u16, quality: u8, compression: u8) -> BytesMut {
-        // Try different tight encoding methods and pick the best
+        // Intelligently choose the best encoding method based on image content
 
         // Method 1: Check if it's a solid color
         let pixels = rgba_to_rgb24_pixels(data);
@@ -31,7 +31,7 @@ impl Encoding for TightEncoding {
             return encode_tight_palette(&pixels, width, height, &palette, compression);
         }
 
-        // Method 3: Use JPEG for photographic content
+        // Method 3: Use JPEG for photographic content (powered by libjpeg-turbo)
         encode_tight_jpeg(data, width, height, quality)
     }
 }
