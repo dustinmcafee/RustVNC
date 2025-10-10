@@ -44,7 +44,6 @@ import android.os.Looper;
 import android.os.PowerManager;
 
 import androidx.annotation.NonNull;
-import androidx.core.content.ContextCompat;
 import androidx.core.content.IntentSanitizer;
 import androidx.preference.PreferenceManager;
 import android.os.SystemClock;
@@ -61,12 +60,8 @@ import java.net.SocketException;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Enumeration;
-import java.util.LinkedHashSet;
-import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Optional;
-import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 public class MainService extends Service {
@@ -96,12 +91,6 @@ public class MainService extends Service {
      * Only used on Android 11 and later.
      */
     public static final String EXTRA_FALLBACK_SCREEN_CAPTURE = "net.christianbeier.droidvnc_ng.EXTRA_FALLBACK_SCREEN_CAPTURE";
-    public static final String ACTION_GET_CLIENTS = "net.christianbeier.droidvnc_ng.ACTION_GET_CLIENTS";
-    public static final String EXTRA_RECEIVER = "net.christianbeier.droidvnc_ng.EXTRA_RECEIVER";
-    public static final String EXTRA_CLIENTS = "net.christianbeier.droidvnc_ng.EXTRA_CLIENTS";
-    public static final String ACTION_DISCONNECT = "net.christianbeier.droidvnc_ng.ACTION_DISCONNECT";
-    public static final String EXTRA_CLIENT_CONNECTION_ID = "net.christianbeier.droidvnc_ng.EXTRA_CLIENT_CONNECTION_ID";
-    public static final String EXTRA_CLIENT_REQUEST_ID = "net.christianbeier.droidvnc_ng.EXTRA_CLIENT_REQUEST_ID";
 
     final static String ACTION_HANDLE_MEDIA_PROJECTION_REQUEST_RESULT = "action_handle_media_projection_request_result";
     final static String EXTRA_MEDIA_PROJECTION_REQUEST_RESULT_DATA = "result_data_media_projection_request";
@@ -124,7 +113,7 @@ public class MainService extends Service {
     private PowerManager.WakeLock mWakeLock;
     private Notification mNotification;
 
-    private final List<Long> mConnectedClients = new ArrayList<>() ;
+    private int mNumberOfClients;
 
     private static class OutboundClientReconnectData {
         Intent intent;
@@ -161,7 +150,13 @@ public class MainService extends Service {
                         entry.getValue().reconnectTriesLeft = entry.getValue().intent.getIntExtra(EXTRA_RECONNECT_TRIES, 0);
                         // NB that onAvailable() runs on internal ConnectivityService thread, so still use mOutboundClientReconnectHandler here
                         mOutboundClientReconnectHandler.postAtTime(
-                                () -> ContextCompat.startForegroundService(MainService.this, entry.getValue().intent),
+                                () -> {
+                                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                                        startForegroundService(entry.getValue().intent);
+                                    } else {
+                                        startService(entry.getValue().intent);
+                                    }
+                                },
                                 entry.getKey(),
                                 SystemClock.uptimeMillis() + entry.getValue().backoff * 1000L
                         );
@@ -218,10 +213,6 @@ public class MainService extends Service {
     static native int vncGetFramebufferWidth();
     static native int vncGetFramebufferHeight();
     static native void vncSendCutText(String text);
-    private native String vncGetRemoteHost(long client);
-    private native int vncGetDestinationPort(long client);
-    private native String vncGetRepeaterId(long client);
-    private native boolean vncDisconnect(long client);
 
     @Override
     public IBinder onBind(Intent intent) {
@@ -345,7 +336,11 @@ public class MainService extends Service {
                 } else {
                     // Start immediately. On API level 29, this re-shows the MediaProjection dialog :-/
                     // API level <= 28 has the checkbox on the dialog to make it not reappear.
-                    ContextCompat.startForegroundService(MainService.this, startIntent);
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        startForegroundService(startIntent);
+                    } else {
+                        startService(startIntent);
+                    }
                 }
             } else {
                 Log.e(TAG, "onStartCommand: restart after crash but no persisted values, bailing out");
@@ -491,10 +486,16 @@ public class MainService extends Service {
             // Step 2: coming back from input permission check, now setup InputService and ask for write storage permission or notification permission
             InputService.isInputEnabled = intent.getBooleanExtra(EXTRA_INPUT_RESULT, false);
             if(Build.VERSION.SDK_INT < 33) {
-                // if file transfer not wanted, skip request without bothering the user
-                WriteStorageRequestActivity.requestIfNeededAndPostResult(this, !Objects.requireNonNull(MainServicePersistData.loadStartIntent(this)).getBooleanExtra(EXTRA_FILE_TRANSFER, PreferenceManager.getDefaultSharedPreferences(this).getBoolean(Constants.PREFS_KEY_SETTINGS_FILE_TRANSFER, mDefaults.getFileTransfer())));
+                Intent writeStorageRequestIntent = new Intent(this, WriteStorageRequestActivity.class);
+                writeStorageRequestIntent.putExtra(
+                        EXTRA_FILE_TRANSFER,
+                        Objects.requireNonNull(MainServicePersistData.loadStartIntent(this)).getBooleanExtra(EXTRA_FILE_TRANSFER, PreferenceManager.getDefaultSharedPreferences(this).getBoolean(Constants.PREFS_KEY_SETTINGS_FILE_TRANSFER, mDefaults.getFileTransfer())));
+                writeStorageRequestIntent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                startActivity(writeStorageRequestIntent);
             } else {
-                NotificationRequestActivity.requestIfNeededAndPostResult(this);
+                Intent notificationRequestIntent = new Intent(this, NotificationRequestActivity.class);
+                notificationRequestIntent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                startActivity(notificationRequestIntent);
             }
             return START_STICKY;
         }
@@ -522,10 +523,10 @@ public class MainService extends Service {
             InputService.scaling = PreferenceManager.getDefaultSharedPreferences(this).getFloat(Constants.PREFS_KEY_SERVER_LAST_SCALING, new Defaults(this).getScaling());
 
             // Step 1: check input/start-on-boot permission
-            InputRequestActivity.requestIfNeededAndPostResult(this,
-                    !intent.getBooleanExtra(EXTRA_VIEW_ONLY, mDefaults.getViewOnly()),
-                    Build.VERSION.SDK_INT >= 30 && PreferenceManager.getDefaultSharedPreferences(this).getBoolean(Constants.PREFS_KEY_SETTINGS_START_ON_BOOT,  new Defaults(this).getStartOnBoot()),
-                    false);
+            Intent inputRequestIntent = new Intent(this, InputRequestActivity.class);
+            inputRequestIntent.putExtra(EXTRA_VIEW_ONLY, intent.getBooleanExtra(EXTRA_VIEW_ONLY, mDefaults.getViewOnly()));
+            inputRequestIntent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(inputRequestIntent);
             return START_STICKY;
         }
 
@@ -592,82 +593,6 @@ public class MainService extends Service {
             }
         }
 
-        if(ACTION_GET_CLIENTS.equals(intent.getAction()) && intent.getStringExtra(EXTRA_RECEIVER) != null) {
-            Log.d(TAG, "onStartCommand: get clients, id " + intent.getStringExtra(EXTRA_REQUEST_ID) + " receiver " + intent.getStringExtra(EXTRA_RECEIVER));
-
-            if(vncIsActive()) {
-                ClientList clientList = ClientList.empty();
-
-                mConnectedClients.forEach(client -> clientList.insertOrUpdate(new ClientList.Client(
-                        client,
-                        vncGetRemoteHost(client),
-                        vncGetDestinationPort(client) < 0 ? null : vncGetDestinationPort(client),
-                        vncGetRepeaterId(client),
-                        null
-                )));
-
-                mOutboundClientsToReconnect.forEach((key, value) -> clientList.insertOrUpdate(new ClientList.Client(
-                        value.client,
-                        value.intent.getStringExtra(MainService.EXTRA_HOST),
-                        value.intent.getIntExtra(MainService.EXTRA_PORT, value.intent.getStringExtra(MainService.EXTRA_REPEATER_ID) != null ? mDefaults.getPortRepeater() : mDefaults.getPortReverse()),
-                        value.intent.getStringExtra(MainService.EXTRA_REPEATER_ID),
-                        value.intent.getStringExtra(MainService.EXTRA_REQUEST_ID)
-                )));
-
-                // Send explicit Intent
-                Intent answer = new Intent(intent.getAction());
-                answer.putExtra(EXTRA_CLIENTS, clientList.toJson());
-                answer.setPackage(intent.getStringExtra(EXTRA_RECEIVER));
-                sendBroadcast(answer);
-                return START_STICKY;
-            } else {
-                stopSelfByUs();
-                return START_NOT_STICKY;
-            }
-        }
-
-        if(ACTION_DISCONNECT.equals(intent.getAction())) {
-            Log.d(TAG, "onStartCommand: disconnect client, id " + intent.getStringExtra(EXTRA_REQUEST_ID));
-
-            if(vncIsActive()) {
-                long clientConnectionId = intent.getLongExtra(EXTRA_CLIENT_CONNECTION_ID, 0);
-                String clientRequestId = intent.getStringExtra(EXTRA_CLIENT_REQUEST_ID);
-                boolean status = false;
-
-                // if both are given, only connection id is handled
-                if (clientConnectionId != 0) {
-                    // find client for connection id
-                    Optional<Long> client = mConnectedClients.stream().filter(clientPtr -> ClientList.isConnectionIdMatchingClient(clientConnectionId, clientPtr)).findFirst();
-                    if(client.isPresent()) {
-                        status = vncDisconnect(client.get());
-                    }
-                } else if (clientRequestId != null && !clientRequestId.isEmpty()) {
-                    // we get the full entry in order to get the exact key reference (needed for cancellation at the Handler, as this does a "==" comparison, not .equals())
-                    Optional<Map.Entry<String, OutboundClientReconnectData>> entry = mOutboundClientsToReconnect.entrySet().stream().filter(someEntry -> someEntry.getKey().equals(clientRequestId)).findFirst();
-                    if (entry.isPresent()) {
-                        // found!
-                        status = true;
-                        // first, remove from reconnect list
-                        mOutboundClientsToReconnect.remove(clientRequestId);
-                        // then, remove reconnect Runnable from Handler
-                        mOutboundClientReconnectHandler.removeCallbacksAndMessages(entry.get().getKey());
-                        // finally, disconnect if connected
-                        vncDisconnect(entry.get().getValue().client);
-                    }
-                } else {
-                    Log.e(TAG, "onStartCommand: disconnect client, id " + intent.getStringExtra(EXTRA_REQUEST_ID) + ": missing extras");
-                }
-
-                Intent answer = new Intent(ACTION_DISCONNECT);
-                answer.putExtra(EXTRA_REQUEST_ID, intent.getStringExtra(EXTRA_REQUEST_ID));
-                answer.putExtra(EXTRA_REQUEST_SUCCESS, status);
-                sendBroadcastToOthersAndUs(answer);
-            } else {
-                stopSelfByUs();
-                return START_NOT_STICKY;
-            }
-        }
-
         // no known action was given, stop the _service_ again if the _server_ is not active
         if(!vncIsActive()) {
             stopSelfByUs();
@@ -683,7 +608,7 @@ public class MainService extends Service {
 
         try {
             instance.mWakeLock.acquire();
-            instance.mConnectedClients.add(client);
+            instance.mNumberOfClients++;
             instance.updateNotification(false);
             // showing pointers depends on view-only being false
             Intent startIntent = Objects.requireNonNull(MainServicePersistData.loadStartIntent(instance));
@@ -709,7 +634,7 @@ public class MainService extends Service {
 
         try {
             instance.mWakeLock.release();
-            instance.mConnectedClients.remove(client);
+            instance.mNumberOfClients--;
             if(!instance.mIsStopping) {
                 // don't show notifications when clients are disconnected on orderly server shutdown
                 instance.updateNotification(false);
@@ -729,7 +654,11 @@ public class MainService extends Service {
                         Log.d(TAG, "onClientDisconnected: outbound connection " + entry.getKey() + " set to reconnect, reconnecting with delay of " + entry.getValue().backoff + " seconds");
                         instance.mOutboundClientReconnectHandler.postAtTime(() -> {
                                     try {
-                                        ContextCompat.startForegroundService(instance, entry.getValue().intent);
+                                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                                            instance.startForegroundService(entry.getValue().intent);
+                                        } else {
+                                            instance.startService(entry.getValue().intent);
+                                        }
                                     } catch (NullPointerException ignored) {
                                         // onClientDisconnected() is triggered by vncStopServer() from onDestroy(),
                                         // but the actual call might happen well after instance is set to null in onDestroy()
@@ -804,7 +733,13 @@ public class MainService extends Service {
                                 + " reconnect tries left, reconnecting with delay of "
                                 + reconnectData.backoff
                                 + " seconds");
-                        mOutboundClientReconnectHandler.postAtTime(() -> ContextCompat.startForegroundService(MainService.this, intent),
+                        mOutboundClientReconnectHandler.postAtTime(() -> {
+                                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                                        startForegroundService(intent);
+                                    } else {
+                                        startService(intent);
+                                    }
+                                },
                                 key, // important to use exact key reference here, see above!
                                 SystemClock.uptimeMillis() + reconnectData.backoff * 1000L);
                     } else {
@@ -828,7 +763,11 @@ public class MainService extends Service {
             intent.putExtra(MainService.EXTRA_MEDIA_PROJECTION_REQUEST_RESULT_CODE, mResultCode);
             intent.putExtra(MainService.EXTRA_MEDIA_PROJECTION_REQUEST_RESULT_DATA, mResultData);
 
-            ContextCompat.startForegroundService(MainService.this, intent);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(intent);
+            } else {
+                startService(intent);
+            }
         } else {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                 Log.d(TAG, "startScreenCapture: trying takeScreenShot backend");
@@ -877,7 +816,7 @@ public class MainService extends Service {
 
     static int getClientCount() {
         try {
-            return instance.mConnectedClients.size();
+            return instance.mNumberOfClients;
         } catch (Exception ignored) {
             return 0;
         }
@@ -889,13 +828,14 @@ public class MainService extends Service {
      */
     static ArrayList<String> getIPv4s() {
 
-        Set<String> hosts = new LinkedHashSet<>();
+        ArrayList<String> hosts = new ArrayList<>();
 
         // if running on Chrome OS, this prop is set and contains the device's IPv4 address,
         // see https://chromeos.dev/en/games/optimizing-games-networking
         String prop = Utils.getProp("arc.net.ipv4.host_address");
         if(!prop.isEmpty()) {
             hosts.add(prop);
+            return hosts;
         }
 
         // not running on Chrome OS
@@ -919,7 +859,7 @@ public class MainService extends Service {
             //unused
         }
 
-        return new ArrayList<>(hosts);
+        return hosts;
     }
 
     static int getPort() {
@@ -1020,8 +960,8 @@ public class MainService extends Service {
         int port = Objects.requireNonNull(MainServicePersistData.loadStartIntent(this)).getIntExtra(EXTRA_PORT, PreferenceManager.getDefaultSharedPreferences(this).getInt(Constants.PREFS_KEY_SETTINGS_PORT, mDefaults.getPort()));
         String text = getResources().getQuantityString(
                 port < 0 ? R.plurals.main_service_notification_text_not_listening : R.plurals.main_service_notification_text_listening,
-                mConnectedClients.size(),
-                mConnectedClients.size());
+                mNumberOfClients,
+                mNumberOfClients);
 
         // notify!
         ((NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE)).notify(NOTIFICATION_ID, getNotification(title, text, iconResource, isSilent, action));
