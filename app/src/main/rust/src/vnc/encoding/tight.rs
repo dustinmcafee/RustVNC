@@ -120,9 +120,9 @@ fn encode_tight_palette(pixels: &[u32], _width: u16, _height: u16, palette: &[u3
     buf
 }
 
-/// Encode as Tight JPEG.
+/// Encode as Tight JPEG using libjpeg-turbo.
 fn encode_tight_jpeg(data: &[u8], width: u16, height: u16, quality: u8) -> BytesMut {
-    use jpeg_encoder::{Encoder, ColorType};
+    use crate::turbojpeg::TurboJpegEncoder;
 
     // Convert RGBA to RGB
     let mut rgb_data = Vec::with_capacity((width as usize) * (height as usize) * 3);
@@ -132,23 +132,42 @@ fn encode_tight_jpeg(data: &[u8], width: u16, height: u16, quality: u8) -> Bytes
         rgb_data.push(chunk[2]);
     }
 
-    // Compress with JPEG
-    let mut jpeg_data = Vec::new();
-    let encoder = Encoder::new(&mut jpeg_data, quality);
-    if let Err(e) = encoder.encode(&rgb_data, width, height, ColorType::Rgb) {
-        eprintln!("JPEG encoding failed: {:?}, falling back to basic tight encoding", e);
-        // Basic tight encoding requires client pixel format (4 bytes per pixel for 32bpp)
-        let mut buf = BytesMut::with_capacity(1 + data.len());
-        buf.put_u8(0x00); // Basic tight encoding, no compression
-        // Convert RGBA to client pixel format (RGBX)
-        for chunk in data.chunks_exact(4) {
-            buf.put_u8(chunk[0]); // R
-            buf.put_u8(chunk[1]); // G
-            buf.put_u8(chunk[2]); // B
-            buf.put_u8(0);        // Padding
+    // Compress with TurboJPEG (libjpeg-turbo)
+    let jpeg_data = match TurboJpegEncoder::new() {
+        Ok(mut encoder) => {
+            match encoder.compress_rgb(&rgb_data, width, height, quality) {
+                Ok(data) => data,
+                Err(e) => {
+                    log::error!("TurboJPEG encoding failed: {}, falling back to basic tight encoding", e);
+                    // Basic tight encoding requires client pixel format (4 bytes per pixel for 32bpp)
+                    let mut buf = BytesMut::with_capacity(1 + data.len());
+                    buf.put_u8(0x00); // Basic tight encoding, no compression
+                    // Convert RGBA to client pixel format (RGBX)
+                    for chunk in data.chunks_exact(4) {
+                        buf.put_u8(chunk[0]); // R
+                        buf.put_u8(chunk[1]); // G
+                        buf.put_u8(chunk[2]); // B
+                        buf.put_u8(0);        // Padding
+                    }
+                    return buf;
+                }
+            }
         }
-        return buf;
-    }
+        Err(e) => {
+            log::error!("Failed to create TurboJPEG encoder: {}, falling back to basic tight encoding", e);
+            // Basic tight encoding requires client pixel format (4 bytes per pixel for 32bpp)
+            let mut buf = BytesMut::with_capacity(1 + data.len());
+            buf.put_u8(0x00); // Basic tight encoding, no compression
+            // Convert RGBA to client pixel format (RGBX)
+            for chunk in data.chunks_exact(4) {
+                buf.put_u8(chunk[0]); // R
+                buf.put_u8(chunk[1]); // G
+                buf.put_u8(chunk[2]); // B
+                buf.put_u8(0);        // Padding
+            }
+            return buf;
+        }
+    };
 
     let mut buf = BytesMut::new();
     buf.put_u8(0x90); // JPEG subencoding
