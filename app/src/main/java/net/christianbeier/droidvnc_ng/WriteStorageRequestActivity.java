@@ -23,14 +23,11 @@ package net.christianbeier.droidvnc_ng;
 
 import android.Manifest;
 import android.app.AlertDialog;
-import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.os.Build;
 import android.os.Bundle;
-
-import androidx.core.content.ContextCompat;
 import androidx.preference.PreferenceManager;
 import android.util.Log;
 
@@ -47,35 +44,40 @@ public class WriteStorageRequestActivity extends AppCompatActivity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
-        Log.d(TAG, "onCreate");
+        // if file transfer not wanted, bail out early without bothering the user
+        if(!getIntent().getBooleanExtra(MainService.EXTRA_FILE_TRANSFER, new Defaults(this).getFileTransfer())) {
+            postResultAndFinish(false);
+            return;
+        }
 
-        final SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(this);
+        if (checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
+            Log.i(TAG, "Has no permission! Ask!");
+            final SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(this);
 
             /*
                 As per as per https://stackoverflow.com/a/34612503/361413 shouldShowRequestPermissionRationale()
                 returns false also if user was never asked, so keep track of that with a shared preference. Ouch.
              */
-        if (!prefs.getBoolean(PREFS_KEY_PERMISSION_ASKED_BEFORE, false) || shouldShowRequestPermissionRationale(Manifest.permission.WRITE_EXTERNAL_STORAGE)) {
-            new AlertDialog.Builder(this)
-                    .setCancelable(false)
-                    .setTitle(R.string.write_storage_title)
-                    .setMessage(Build.VERSION.SDK_INT >= Build.VERSION_CODES.R ? R.string.write_storage_msg_android_11 : R.string.write_storage_msg)
-                    .setPositiveButton(R.string.yes, (dialog, which) -> {
-                        requestPermissions(new String[]{Manifest.permission.WRITE_EXTERNAL_STORAGE}, REQUEST_WRITE_STORAGE);
-                        SharedPreferences.Editor ed = prefs.edit();
-                        ed.putBoolean(PREFS_KEY_PERMISSION_ASKED_BEFORE, true);
-                        ed.apply();
-                    })
-                    .setNegativeButton(getString(R.string.no), (dialog, which) -> {
-                        postResult(this, false);
-                        finish();
-                    })
-                    .show();
+            if (!prefs.getBoolean(PREFS_KEY_PERMISSION_ASKED_BEFORE, false) || shouldShowRequestPermissionRationale(Manifest.permission.WRITE_EXTERNAL_STORAGE)) {
+                new AlertDialog.Builder(this)
+                        .setCancelable(false)
+                        .setTitle(R.string.write_storage_title)
+                        .setMessage(Build.VERSION.SDK_INT >= Build.VERSION_CODES.R ? R.string.write_storage_msg_android_11 : R.string.write_storage_msg)
+                        .setPositiveButton(R.string.yes, (dialog, which) -> {
+                            requestPermissions(new String[]{Manifest.permission.WRITE_EXTERNAL_STORAGE}, REQUEST_WRITE_STORAGE);
+                            SharedPreferences.Editor ed = prefs.edit();
+                            ed.putBoolean(PREFS_KEY_PERMISSION_ASKED_BEFORE, true);
+                            ed.apply();
+                        })
+                        .setNegativeButton(getString(R.string.no), (dialog, which) -> postResultAndFinish(false))
+                        .show();
+            } else {
+                postResultAndFinish(false);
+            }
         } else {
-            postResult(this, false);
-            finish();
+            Log.i(TAG, "Permission already given!");
+            postResultAndFinish(true);
         }
-
     }
 
 
@@ -83,42 +85,27 @@ public class WriteStorageRequestActivity extends AppCompatActivity {
     public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
         if (requestCode == REQUEST_WRITE_STORAGE) {
-            postResult(this,grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED);
-            finish();
+            postResultAndFinish(grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED);
         }
     }
 
-    private static void postResult(Context context, boolean isPermissionGiven) {
-        Log.i(TAG, "postResult: permission " + (isPermissionGiven ? "granted" : "denied"));
+    private void postResultAndFinish(boolean isPermissionGiven) {
 
-        Intent intent = new Intent(context, MainService.class);
+        if (isPermissionGiven)
+            Log.i(TAG, "permission granted");
+        else
+            Log.i(TAG, "permission denied");
+
+        Intent intent = new Intent(this, MainService.class);
         intent.setAction(MainService.ACTION_HANDLE_WRITE_STORAGE_RESULT);
-        intent.putExtra(MainService.EXTRA_ACCESS_KEY, PreferenceManager.getDefaultSharedPreferences(context).getString(Constants.PREFS_KEY_SETTINGS_ACCESS_KEY, new Defaults(context).getAccessKey()));
+        intent.putExtra(MainService.EXTRA_ACCESS_KEY, PreferenceManager.getDefaultSharedPreferences(this).getString(Constants.PREFS_KEY_SETTINGS_ACCESS_KEY, new Defaults(this).getAccessKey()));
         intent.putExtra(MainService.EXTRA_WRITE_STORAGE_RESULT, isPermissionGiven);
-        ContextCompat.startForegroundService(context, intent);
-    }
-
-    /**
-     * Requests the permission if needed, otherwise posts a positive result back to MainService immediately.
-     * @param context The calling context
-     * @param skipRequest True if the request should be skipped and a negative result posted back to MainService.
-     */
-    public static void requestIfNeededAndPostResult(Context context, boolean skipRequest) {
-        if (skipRequest) {
-            Log.i(TAG, "requestIfNeededAndPostResult: skipping request");
-            postResult(context, false);
-            return;
-        }
-
-        if (context.checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
-            Log.i(TAG, "requestIfNeededAndPostResult: Has no permission! Ask!");
-            Intent writeStorageRequestIntent = new Intent(context, WriteStorageRequestActivity.class);
-            writeStorageRequestIntent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-            context.startActivity(writeStorageRequestIntent);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(intent);
         } else {
-            Log.i(TAG, "requestIfNeededAndPostResult: Permission already given!");
-            postResult(context, true);
+            startService(intent);
         }
+        finish();
     }
 
 }
