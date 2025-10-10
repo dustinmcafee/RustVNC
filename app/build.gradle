@@ -47,8 +47,9 @@ android {
     }
 }
 
-tasks.register('buildRust', Exec) {
-    description "Builds Rust VNC library for all Android ABIs"
+// Build libjpeg-turbo for all Android ABIs
+tasks.register('buildLibjpegTurbo', Exec) {
+    description "Builds libjpeg-turbo library for all Android ABIs"
     group "build"
 
     def abiMap = [
@@ -58,21 +59,103 @@ tasks.register('buildRust', Exec) {
         "x86_64"     : "x86_64-linux-android"
     ]
 
+    def libjpegTurboPath = "${project.rootDir}/libjpeg-turbo"
+    def ndkDir = android.ndkDirectory.absolutePath
+    def androidApiLevel = android.defaultConfig.minSdk
+    def buildOutputDir = "${project.buildDir}/libjpeg-turbo"
+
+    inputs.dir libjpegTurboPath
+    outputs.dir buildOutputDir
+
+    doFirst {
+        println "Building libjpeg-turbo for Android NDK: ${ndkDir}"
+        println "libjpeg-turbo source: ${libjpegTurboPath}"
+        println "Output directory: ${buildOutputDir}"
+    }
+
+    def shellCommands = abiMap.collect { abi, targetTriple ->
+        def buildDir = "${buildOutputDir}/${abi}/build"
+        def installDir = "${buildOutputDir}/${abi}/install"
+        def toolchainFile = "${ndkDir}/build/cmake/android.toolchain.cmake"
+
+        // Use Android SDK's CMake if available, otherwise use system cmake
+        def cmakeCmd = "cmake"
+        def sdkCmake = "${android.sdkDirectory}/cmake"
+        def cmakeVersionDirs = new File(sdkCmake).exists() ? new File(sdkCmake).listFiles()?.findAll { it.isDirectory() } : []
+        if (cmakeVersionDirs && !cmakeVersionDirs.isEmpty()) {
+            // Use the latest CMake version from SDK
+            def latestCmake = cmakeVersionDirs.sort { it.name }.last()
+            cmakeCmd = "${latestCmake}/bin/cmake"
+            println "Using Android SDK CMake: ${cmakeCmd}"
+        }
+
+        """
+        echo "Building libjpeg-turbo for ABI: ${abi}"
+
+        mkdir -p "${buildDir}"
+        mkdir -p "${installDir}"
+
+        cd "${buildDir}"
+        ${cmakeCmd} "${libjpegTurboPath}" \\
+            -DCMAKE_POLICY_DEFAULT_CMP0057=NEW \\
+            -DCMAKE_TOOLCHAIN_FILE="${toolchainFile}" \\
+            -DANDROID_ABI="${abi}" \\
+            -DANDROID_PLATFORM=android-${androidApiLevel} \\
+            -DCMAKE_INSTALL_PREFIX="${installDir}" \\
+            -DCMAKE_BUILD_TYPE=Release \\
+            -DENABLE_SHARED=OFF \\
+            -DENABLE_STATIC=ON \\
+            -DWITH_TURBOJPEG=ON \\
+            -DWITH_SIMD=ON
+
+        ${cmakeCmd} --build . --config Release --target install -- -j4
+
+        # Verify libraries were built
+        if [ ! -f "${installDir}/lib/libturbojpeg.a" ]; then
+            echo "ERROR: libturbojpeg.a not found after build"
+            exit 1
+        fi
+
+        echo "libjpeg-turbo built successfully for ${abi}"
+        """.stripIndent()
+    }.join('\n')
+
+    commandLine 'bash', '-c', shellCommands
+}
+
+tasks.register('buildRust', Exec) {
+    description "Builds Rust VNC library for all Android ABIs"
+    group "build"
+
+    dependsOn buildLibjpegTurbo
+
+    def abiMap = [
+        "armeabi-v7a": "armv7-linux-androideabi",
+        "arm64-v8a"  : "aarch64-linux-android",
+        "x86"        : "i686-linux-android",
+        "x86_64"     : "x86_64-linux-android"
+    ]
+
     def rustProjectPath = "${project.projectDir}/src/main/rust"
+    def libjpegTurboOutputDir = "${project.buildDir}/libjpeg-turbo"
     def ndkDir = android.ndkDirectory.absolutePath
     def androidApiLevel = android.defaultConfig.minSdk
 
     inputs.dir rustProjectPath
+    inputs.dir libjpegTurboOutputDir
     outputs.dir "${project.projectDir}/src/main/jniLibs"
 
     doFirst {
         println "Building Rust VNC library for Android NDK: ${ndkDir}"
         println "Rust project path: ${rustProjectPath}"
+        println "libjpeg-turbo output: ${libjpegTurboOutputDir}"
         println "Android API Level for NDK: ${androidApiLevel}"
     }
 
     def shellCommands = abiMap.collect { abi, targetTriple ->
         def toolchainBinDir = "${ndkDir}/toolchains/llvm/prebuilt/linux-x86_64/bin"
+        def libjpegLibDir = "${libjpegTurboOutputDir}/${abi}/install/lib"
+        def libjpegIncludeDir = "${libjpegTurboOutputDir}/${abi}/install/include"
         def currentPath = System.getenv('PATH')
 
         """
@@ -87,6 +170,9 @@ tasks.register('buildRust', Exec) {
         export ANDROID_NDK_ROOT="${ndkDir}"
         export NDK_TOOLCHAIN_VERSION="clang"
         export NDK_API_LEVEL="${androidApiLevel}"
+
+        # Set libjpeg-turbo library paths for Rust linker
+        export RUSTFLAGS="-L ${libjpegLibDir} -l static=turbojpeg -l static=jpeg"
 
         rustup target add ${targetTriple} || true
 

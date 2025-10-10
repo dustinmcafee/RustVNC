@@ -258,7 +258,10 @@ This Rust edition requires:
 
 3. **Android NDK** installed via Android Studio (NDK r23+)
 
-4. **Android Studio** or the Android SDK command-line tools
+4. **CMake** installed via Android Studio SDK Manager (version 3.18.1+)
+   - Required for building libjpeg-turbo
+
+5. **Android Studio** or the Android SDK command-line tools
 
 ### Build Commands
 
