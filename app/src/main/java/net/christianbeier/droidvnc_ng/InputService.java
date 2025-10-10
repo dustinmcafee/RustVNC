@@ -615,16 +615,40 @@ public class InputService extends AccessibilityService {
 			   DPAD Left/Right/Up/Down
 			 */
 			if ((keysym == 0xff51 || keysym == 0xff52 || keysym == 0xff53 || keysym == 0xff54) && down != 0) {
-				int direction = 0;
-				if(keysym == 0xff51) direction = View.FOCUS_LEFT;
-				if(keysym == 0xff52) direction = View.FOCUS_UP;
-				if(keysym == 0xff53) direction = View.FOCUS_RIGHT;
-				if(keysym == 0xff54) direction = View.FOCUS_DOWN;
 
-				AccessibilityNodeInfo nextFocus = Objects.requireNonNull(currentFocusNode).focusSearch(direction);
-				if (nextFocus != null) {
-					nextFocus.performAction(AccessibilityNodeInfo.ACTION_FOCUS);
-					nextFocus.recycle();
+				boolean supportsTextTraversal = false;
+				for (AccessibilityNodeInfo.AccessibilityAction a : currentFocusNode.getActionList()) {
+					if (a.getId() == AccessibilityNodeInfo.AccessibilityAction.ACTION_PREVIOUS_AT_MOVEMENT_GRANULARITY.getId() ||
+						a.getId() == AccessibilityNodeInfo.AccessibilityAction.ACTION_NEXT_AT_MOVEMENT_GRANULARITY.getId()) {
+						supportsTextTraversal = true;
+						break;
+					}
+				}
+
+				if (supportsTextTraversal) {
+					Bundle action = new Bundle();
+					int granularity = (keysym == 0xff51 || keysym == 0xff53) ?
+							AccessibilityNodeInfo.MOVEMENT_GRANULARITY_CHARACTER :
+							AccessibilityNodeInfo.MOVEMENT_GRANULARITY_LINE;
+					action.putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_MOVEMENT_GRANULARITY_INT, granularity);
+					action.putBoolean(AccessibilityNodeInfo.ACTION_ARGUMENT_EXTEND_SELECTION_BOOLEAN, false);
+
+					if(keysym == 0xff51 || keysym == 0xff52)
+						Objects.requireNonNull(currentFocusNode).performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_PREVIOUS_AT_MOVEMENT_GRANULARITY.getId(), action);
+					else
+						Objects.requireNonNull(currentFocusNode).performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_NEXT_AT_MOVEMENT_GRANULARITY.getId(), action);
+				} else {
+					int direction = 0;
+					if(keysym == 0xff51) direction = View.FOCUS_LEFT;
+					if(keysym == 0xff52) direction = View.FOCUS_UP;
+					if(keysym == 0xff53) direction = View.FOCUS_RIGHT;
+					if(keysym == 0xff54) direction = View.FOCUS_DOWN;
+
+					AccessibilityNodeInfo nextFocus = Objects.requireNonNull(currentFocusNode).focusSearch(direction);
+					if (nextFocus != null) {
+						nextFocus.performAction(AccessibilityNodeInfo.ACTION_FOCUS);
+						nextFocus.recycle();
+					}
 				}
 			}
 
