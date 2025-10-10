@@ -37,27 +37,63 @@ This document tracks the migration from libvncserver (C) to a pure Rust VNC impl
 | Clipboard | `send_cut_text_to_all()` | ✅ |
 | File Transfer | Not implemented | ⚠️ Not used in MainService |
 
-### 3. Build System Integration
+### 3. libjpeg-turbo Integration
+**Status:** ✅ Complete
+**Location:** `app/src/main/rust/src/turbojpeg.rs`
+
+**Why:** The pure Rust `jpeg-encoder` crate had compatibility issues with VNC viewers. libjpeg-turbo provides industry-standard JPEG compression with better compatibility and performance.
+
+**Implementation:**
+- ✅ **FFI Bindings** - `turbojpeg.rs`
+  - Safe Rust wrapper around TurboJPEG C API
+  - Automatic resource cleanup with Drop trait
+  - Error handling with Result types
+
+- ✅ **Gradle Build Integration** - `buildLibjpegTurbo` task
+  - Builds libjpeg-turbo for all Android ABIs using CMake
+  - Outputs static libraries to `build/libjpeg-turbo/{abi}/install/`
+  - Runs before Rust build
+  - Passes library paths to Rust via RUSTFLAGS
+
+- ✅ **Encoding Update** - `vnc/encoding/tight.rs`
+  - Replaced `jpeg-encoder` with `TurboJpegEncoder`
+  - Uses 4:2:2 chroma subsampling for quality/size balance
+  - Falls back to basic tight encoding on failure
+
+**Benefits:**
+- Industry-standard JPEG compression
+- SIMD-optimized for ARM and x86
+- Better compatibility with all VNC viewers
+- Proven stability and performance
+
+### 4. Build System Integration
 **Status:** ✅ Complete
 
 **File:** `app/build.gradle`
+
+- ✅ Added `buildLibjpegTurbo` task:
+  - Compiles libjpeg-turbo with CMake for all ABIs
+  - Enables TurboJPEG API and SIMD optimizations
+  - Builds static libraries for linking
 
 - ✅ Added `buildRust` task for all Android ABIs:
   - `armeabi-v7a` (ARMv7)
   - `arm64-v8a` (ARM64)
   - `x86` (32-bit Intel)
   - `x86_64` (64-bit Intel)
+  - Depends on `buildLibjpegTurbo`
 
 - ✅ Configured automatic dependency chains:
-  - Rust builds before APK assembly
-  - Rust builds before JNI merge
+  - libjpeg-turbo builds first
+  - Rust builds second (links against libjpeg-turbo)
+  - APK assembly builds last
   - Outputs to `src/main/jniLibs/{abi}/libdroidvnc_ng.so`
 
 - ✅ Removed CMake configuration:
   - Deleted `externalNativeBuild` sections
   - Rust provides all native functionality via JNI
 
-### 4. Java/Kotlin Code Updates
+### 5. Java/Kotlin Code Updates
 **Status:** ✅ Complete
 
 **File:** `app/src/main/java/net/christianbeier/droidvnc_ng/MainService.java`
