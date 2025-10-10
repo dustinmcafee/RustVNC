@@ -38,7 +38,7 @@ This document tracks the migration from libvncserver (C) to a pure Rust VNC impl
 | File Transfer | Not implemented | ⚠️ Not used in MainService |
 
 ### 3. libjpeg-turbo Integration
-**Status:** ✅ Complete
+**Status:** ✅ Complete & Tested
 **Location:** `app/src/main/rust/src/turbojpeg.rs`
 
 **Why:** The pure Rust `jpeg-encoder` crate had compatibility issues with VNC viewers. libjpeg-turbo provides industry-standard JPEG compression with better compatibility and performance.
@@ -51,6 +51,8 @@ This document tracks the migration from libvncserver (C) to a pure Rust VNC impl
 
 - ✅ **Gradle Build Integration** - `buildLibjpegTurbo` task
   - Builds libjpeg-turbo for all Android ABIs using CMake
+  - Uses Android SDK's CMake (3.18.1+) for compatibility
+  - Sets CMake policy CMP0057 for NDK 27 compatibility
   - Outputs static libraries to `build/libjpeg-turbo/{abi}/install/`
   - Runs before Rust build
   - Passes library paths to Rust via RUSTFLAGS
@@ -59,6 +61,13 @@ This document tracks the migration from libvncserver (C) to a pure Rust VNC impl
   - Replaced `jpeg-encoder` with `TurboJpegEncoder`
   - Uses 4:2:2 chroma subsampling for quality/size balance
   - Falls back to basic tight encoding on failure
+  - Integrated into intelligent encoding selection (solid/palette/JPEG)
+
+**Testing Results:**
+- ✅ libjpeg-turbo builds successfully for all ABIs
+- ✅ JPEG compression working with libjpeg-turbo
+- ✅ VNC viewers receive and display JPEG-encoded frames correctly
+- ✅ Fallback mechanisms tested
 
 **Benefits:**
 - Industry-standard JPEG compression
@@ -121,6 +130,7 @@ source "$HOME/.cargo/env"
 cargo install cargo-ndk
 
 # Ensure Android NDK is installed via Android Studio
+# Ensure CMake is installed via Android Studio SDK Manager (version 3.18.1+)
 ```
 
 ### Build Commands
