@@ -23,6 +23,7 @@
 package net.christianbeier.droidvnc_ng;
 
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.core.content.ContextCompat;
 import androidx.preference.PreferenceManager;
 
 import android.app.Activity;
@@ -35,20 +36,34 @@ import android.os.Build;
 import android.os.Bundle;
 import android.util.Log;
 
+import java.util.Random;
+
 public class MediaProjectionRequestActivity extends AppCompatActivity {
 
     private static final String TAG = "MPRequestActivity";
-    private static final int REQUEST_MEDIA_PROJECTION = 42;
     static final String EXTRA_UPGRADING_FROM_NO_OR_FALLBACK_SCREEN_CAPTURE = "upgrading_from_no_or_fallback_screen_capture";
     static final String EXTRA_OMIT_FALLBACK_SCREEN_CAPTURE_DIALOG = "omit_fallback_screen_capture_dialog";
     private boolean mIsUpgradingFromNoOrFallbackScreenCapture;
+    private int mRequestCode;
+    private AlertDialog mDialog;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        Log.d(TAG, "onCreate");
+        handleIntent(getIntent());
+    }
 
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        Log.d(TAG, "onNewIntent");
+        handleIntent(intent);
+    }
+
+    private void handleIntent(Intent intent) {
         // we need this info for our answer to MainService later
-        mIsUpgradingFromNoOrFallbackScreenCapture = getIntent().getBooleanExtra(EXTRA_UPGRADING_FROM_NO_OR_FALLBACK_SCREEN_CAPTURE, false);
+        mIsUpgradingFromNoOrFallbackScreenCapture = intent.getBooleanExtra(EXTRA_UPGRADING_FROM_NO_OR_FALLBACK_SCREEN_CAPTURE, false);
 
         MediaProjectionManager mMediaProjectionManager = (MediaProjectionManager) getSystemService(Context.MEDIA_PROJECTION_SERVICE);
 
@@ -61,27 +76,38 @@ public class MediaProjectionRequestActivity extends AppCompatActivity {
         else
             screenCaptureIntent = mMediaProjectionManager.createScreenCaptureIntent();
 
-        if(!mIsUpgradingFromNoOrFallbackScreenCapture || getIntent().getBooleanExtra(EXTRA_OMIT_FALLBACK_SCREEN_CAPTURE_DIALOG, false)) {
+        // this is a new request, code must be >= 0
+        mRequestCode = new Random().nextInt(Integer.MAX_VALUE);
+
+        if(!mIsUpgradingFromNoOrFallbackScreenCapture || intent.getBooleanExtra(EXTRA_OMIT_FALLBACK_SCREEN_CAPTURE_DIALOG, false)) {
             // ask for MediaProjection right away
-            Log.i(TAG, "Requesting confirmation");
+            Log.i(TAG, "Requesting directly");
             // This initiates a prompt dialog for the user to confirm screen projection.
             startActivityForResult(
                     screenCaptureIntent,
-                    REQUEST_MEDIA_PROJECTION);
+                    mRequestCode);
         } else {
             // show user info dialog before asking
-            new AlertDialog.Builder(this)
+            try {
+                mDialog.dismiss();
+                Log.w(TAG, "Dismissed old dialog");
+            } catch (Exception ignored) {
+            }
+            Log.i(TAG, "Showing dialog");
+            mDialog = new AlertDialog.Builder(this)
                     .setCancelable(false)
                     .setTitle(R.string.mediaprojection_request_activity_fallback_screen_capture_title)
                     .setMessage(R.string.mediaprojection_request_activity_fallback_screen_capture_msg)
                     .setPositiveButton(R.string.yes, (dialog, which) -> {
+                        Log.i(TAG, "Requesting from dialog");
                         // This initiates a prompt dialog for the user to confirm screen projection.
                         startActivityForResult(
                                 screenCaptureIntent,
-                                REQUEST_MEDIA_PROJECTION);
+                                mRequestCode);
                     })
                     .setNegativeButton(getString(R.string.no), (dialog, which) -> finish())
-                    .show();
+                    .create();
+            mDialog.show();
         }
     }
 
@@ -89,7 +115,7 @@ public class MediaProjectionRequestActivity extends AppCompatActivity {
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
 
-        if (requestCode == REQUEST_MEDIA_PROJECTION) {
+        if (requestCode == mRequestCode) {
             if (resultCode != Activity.RESULT_OK)
                 Log.i(TAG, "User cancelled");
             else
@@ -101,12 +127,10 @@ public class MediaProjectionRequestActivity extends AppCompatActivity {
             intent.putExtra(MainService.EXTRA_MEDIA_PROJECTION_REQUEST_RESULT_CODE, resultCode);
             intent.putExtra(MainService.EXTRA_MEDIA_PROJECTION_REQUEST_RESULT_DATA, data);
             intent.putExtra(MainService.EXTRA_MEDIA_PROJECTION_REQUEST_UPGRADING_FROM_NO_OR_FALLBACK_SCREEN_CAPTURE, mIsUpgradingFromNoOrFallbackScreenCapture);
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                startForegroundService(intent);
-            } else {
-                startService(intent);
-            }
+            ContextCompat.startForegroundService(this, intent);
             finish();
+        } else {
+            Log.w(TAG, "Ignoring result of old request");
         }
     }
 

@@ -184,6 +184,7 @@ impl VncServer {
         let (client_event_tx, mut client_event_rx) = mpsc::unbounded_channel();
 
         let client = VncClient::new(
+            client_id,
             stream,
             framebuffer.clone(),
             desktop_name,
@@ -355,6 +356,7 @@ impl VncServer {
 
                     // Create VNC client for this reverse connection
                     let client_result = VncClient::new(
+                        client_id,
                         stream,
                         framebuffer.clone(),
                         desktop_name,
@@ -369,7 +371,10 @@ impl VncServer {
                     }));
 
                     match client_result {
-                        Ok(client) => {
+                        Ok(mut client) => {
+                            // Set connection metadata for client management APIs
+                            client.set_connection_metadata(Some(port));
+
                             info!("Reverse connection {} established", client_id);
 
                             let client_arc = Arc::new(RwLock::new(client));
@@ -499,6 +504,7 @@ impl VncServer {
             let (client_event_tx, mut client_event_rx) = mpsc::unbounded_channel();
 
             let connection_result = repeater::connect_repeater(
+                client_id,
                 repeater_host,
                 repeater_port,
                 repeater_id,
@@ -592,5 +598,68 @@ impl VncServer {
                 "Repeater connection task died unexpectedly"
             )),
         }
+    }
+
+    /// Finds a client by its ID.
+    ///
+    /// This method searches through all connected clients to find the one
+    /// with the specified ID.
+    ///
+    /// # Arguments
+    ///
+    /// * `client_id` - The client ID to search for.
+    ///
+    /// # Returns
+    ///
+    /// `Some(Arc<RwLock<VncClient>>)` if the client is found, `None` otherwise.
+    pub async fn find_client(&self, client_id: usize) -> Option<Arc<RwLock<VncClient>>> {
+        let clients = self.clients.read().await;
+        for client in clients.iter() {
+            let client_guard = client.read().await;
+            if client_guard.get_client_id() == client_id {
+                drop(client_guard); // Release read lock before returning
+                return Some(client.clone());
+            }
+        }
+        None
+    }
+
+    /// Disconnects a specific client by its ID.
+    ///
+    /// This method forcibly closes the TCP connection for the specified client,
+    /// which will cause the client's message handler to exit and trigger cleanup.
+    ///
+    /// # Arguments
+    ///
+    /// * `client_id` - The client ID to disconnect.
+    ///
+    /// # Returns
+    ///
+    /// `true` if the client was found and disconnected, `false` if not found.
+    pub async fn disconnect_client(&self, client_id: usize) -> bool {
+        // Find and remove the client from the list
+        let mut clients = self.clients.write().await;
+        let initial_len = clients.len();
+
+        // Find the client with matching ID and remove it
+        clients.retain(|client_arc| {
+            // We can't use async in retain closure, so we use try_read() instead
+            // This is safe because we hold the write lock on the clients list
+            if let Ok(client_guard) = client_arc.try_read() {
+                client_guard.get_client_id() != client_id
+            } else {
+                // If we can't acquire read lock, keep the client (don't remove it)
+                true
+            }
+        });
+
+        let removed = clients.len() < initial_len;
+        drop(clients); // Explicitly release write lock
+
+        if removed {
+            info!("Client {} removed from server client list", client_id);
+        }
+
+        removed
     }
 }

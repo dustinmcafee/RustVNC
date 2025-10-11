@@ -36,6 +36,7 @@ use crate::vnc::framebuffer::Framebuffer;
 ///
 /// # Arguments
 ///
+/// * `client_id` - The unique client ID assigned by the server.
 /// * `repeater_host` - The hostname or IP address of the VNC repeater.
 /// * `repeater_port` - The port on which the VNC repeater is listening.
 /// * `repeater_id` - The unique ID string to send to the repeater for session identification.
@@ -51,6 +52,7 @@ use crate::vnc::framebuffer::Framebuffer;
 /// Returns `Err(io::Error)` if a network error occurs, the repeater ID is too long,
 /// or if the VNC handshake fails.
 pub async fn connect_repeater(
+    client_id: usize,
     repeater_host: String,
     repeater_port: u16,
     repeater_id: String,
@@ -104,7 +106,10 @@ pub async fn connect_repeater(
     info!("Repeater ID sent, proceeding with VNC handshake");
 
     // Now proceed with normal VNC client handshake
-    let client = VncClient::new(stream, framebuffer, desktop_name, password, event_tx).await?;
+    let mut client = VncClient::new(client_id, stream, framebuffer, desktop_name, password, event_tx).await?;
+
+    // Set repeater metadata for client management APIs
+    client.set_repeater_metadata(repeater_id, Some(repeater_port));
 
     info!("VNC repeater connection established successfully");
     Ok(client)
