@@ -274,6 +274,7 @@ impl VncServer {
     /// # Returns
     ///
     /// A mutable reference to the `Framebuffer` instance.
+    #[allow(dead_code)]
     pub fn framebuffer_mut(&mut self) -> &mut Framebuffer {
         &mut self.framebuffer
     }
@@ -661,5 +662,66 @@ impl VncServer {
         }
 
         removed
+    }
+
+    /// Schedules a copy rectangle operation for all connected clients (libvncserver style).
+    ///
+    /// This method iterates through all clients and schedules the specified region to be
+    /// sent using CopyRect encoding. This is the equivalent of libvncserver's
+    /// `rfbScheduleCopyRect` function.
+    ///
+    /// # Arguments
+    ///
+    /// * `x` - The X coordinate of the destination rectangle.
+    /// * `y` - The Y coordinate of the destination rectangle.
+    /// * `width` - The width of the rectangle.
+    /// * `height` - The height of the rectangle.
+    /// * `dx` - The X offset from destination to source (src_x = dest_x + dx).
+    /// * `dy` - The Y offset from destination to source (src_y = dest_y + dy).
+    pub async fn schedule_copy_rect(&self, x: u16, y: u16, width: u16, height: u16, dx: i16, dy: i16) {
+        use crate::vnc::framebuffer::DirtyRegion;
+
+        let region = DirtyRegion::new(x, y, width, height);
+
+        // Clone client list to avoid holding lock during iteration
+        let clients_snapshot = {
+            let clients = self.clients.read().await;
+            clients.clone()
+        };
+
+        // Schedule copy for all clients (libvncserver: rfbGetClientIterator pattern)
+        for client_arc in clients_snapshot.iter() {
+            let client = client_arc.read().await;
+            client.schedule_copy_region(region, dx, dy).await;
+        }
+    }
+
+    /// Performs a copy rectangle operation in the framebuffer and schedules it for all clients.
+    ///
+    /// This method first copies the specified region within the framebuffer memory,
+    /// then schedules the copy operation to be sent to all connected clients.
+    /// This is the equivalent of libvncserver's `rfbDoCopyRect` function.
+    ///
+    /// # Arguments
+    ///
+    /// * `x` - The X coordinate of the destination rectangle.
+    /// * `y` - The Y coordinate of the destination rectangle.
+    /// * `width` - The width of the rectangle.
+    /// * `height` - The height of the rectangle.
+    /// * `dx` - The X offset from destination to source (src_x = dest_x + dx).
+    /// * `dy` - The Y offset from destination to source (src_y = dest_y + dy).
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` if the operation is successful.
+    /// Returns `Err(String)` if the rectangle is out of bounds.
+    pub async fn do_copy_rect(&self, x: u16, y: u16, width: u16, height: u16, dx: i16, dy: i16) -> Result<(), String> {
+        // Perform actual framebuffer copy
+        self.framebuffer.do_copy_region(x, y, width, height, dx, dy).await?;
+
+        // Schedule copy for all clients
+        self.schedule_copy_rect(x, y, width, height, dx, dy).await;
+
+        Ok(())
     }
 }

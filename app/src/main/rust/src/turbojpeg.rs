@@ -8,16 +8,25 @@ use std::os::raw::{c_char, c_int, c_uchar, c_ulong};
 
 // TurboJPEG constants
 pub const TJPF_RGB: c_int = 0; // RGB pixel format
+#[allow(dead_code)]
 pub const TJPF_BGR: c_int = 1; // BGR pixel format
+#[allow(dead_code)]
 pub const TJPF_RGBX: c_int = 2; // RGBX pixel format
+#[allow(dead_code)]
 pub const TJPF_BGRX: c_int = 3; // BGRX pixel format
+#[allow(dead_code)]
 pub const TJPF_XBGR: c_int = 4; // XBGR pixel format
+#[allow(dead_code)]
 pub const TJPF_XRGB: c_int = 5; // XRGB pixel format
+#[allow(dead_code)]
 pub const TJPF_GRAY: c_int = 6; // Grayscale pixel format
 
+#[allow(dead_code)]
 pub const TJSAMP_444: c_int = 0; // 4:4:4 chrominance subsampling
 pub const TJSAMP_422: c_int = 1; // 4:2:2 chrominance subsampling
+#[allow(dead_code)]
 pub const TJSAMP_420: c_int = 2; // 4:2:0 chrominance subsampling
+#[allow(dead_code)]
 pub const TJSAMP_GRAY: c_int = 3; // Grayscale
 
 // Opaque TurboJPEG handle
