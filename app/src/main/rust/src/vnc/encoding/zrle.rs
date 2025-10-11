@@ -64,6 +64,7 @@ fn analyze_runs_and_palette(pixels: &[u32]) -> (usize, usize, HashMap<u32, usize
 
 /// Encodes a rectangle of pixel data using ZRLE with a persistent compressor.
 /// This maintains compression state across rectangles as required by RFC 6143.
+#[allow(dead_code)]
 pub fn encode_zrle_persistent(
     data: &[u8],
     width: u16,
