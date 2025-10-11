@@ -42,7 +42,7 @@ pub use tight::TightEncoding;
 
 // Re-export persistent encoding functions (RFC 6143 compliant)
 pub use zlib::encode_zlib_persistent;
-pub use zrle::encode_zrle_persistent;
+// pub use zrle::encode_zrle_persistent; // Currently unused
 
 /// A trait defining the interface for VNC encoding implementations.
 ///

@@ -112,6 +112,14 @@ pub struct VncClient {
     /// Persistent zlib compressor for ZRLE encoding (RFC 6143: one stream per connection).
     /// Protected by RwLock since encoding happens during send_batched_update.
     zrle_compressor: RwLock<Option<Compress>>,
+    /// Remote host address (IP:port) of the connected client
+    remote_host: String,
+    /// Destination port for repeater connections (None for direct connections)
+    destination_port: Option<u16>,
+    /// Repeater ID for repeater connections (None for direct connections)
+    repeater_id: Option<String>,
+    /// Unique client ID assigned by the server
+    client_id: usize,
 }
 
 impl VncClient {
@@ -122,6 +130,7 @@ impl VncClient {
     ///
     /// # Arguments
     ///
+    /// * `client_id` - The unique client ID assigned by the server.
     /// * `stream` - The `TcpStream` representing the established connection to the VNC client.
     /// * `framebuffer` - The `Framebuffer` instance that this client will receive updates from.
     /// * `desktop_name` - The name of the desktop to be sent to the client during `ServerInit`.
@@ -135,12 +144,18 @@ impl VncClient {
     /// A `Result` which is `Ok(VncClient)` on successful handshake and initialization, or
     /// `Err(std::io::Error)` if an I/O error occurs during communication or handshake.
     pub async fn new(
+        client_id: usize,
         mut stream: TcpStream,
         framebuffer: Framebuffer,
         desktop_name: String,
         password: Option<String>,
         event_tx: mpsc::UnboundedSender<ClientEvent>,
     ) -> Result<Self, std::io::Error> {
+        // Capture remote host address before handshake
+        let remote_host = stream.peer_addr()
+            .map(|addr| addr.to_string())
+            .unwrap_or_else(|_| "unknown".to_string());
+
         // Disable Nagle's algorithm for immediate frame delivery
         stream.set_nodelay(true)?;
 
@@ -231,6 +246,10 @@ impl VncClient {
             send_mutex: Arc::new(tokio::sync::Mutex::new(())),
             zlib_compressor: RwLock::new(None), // Initialized lazily when first used
             zrle_compressor: RwLock::new(None), // Initialized lazily when first used
+            remote_host,
+            destination_port: None, // None for direct inbound connections
+            repeater_id: None, // None for direct inbound connections
+            client_id,
         })
     }
 
@@ -703,5 +722,38 @@ impl VncClient {
         let _lock = self.send_mutex.lock().await;
         self.stream.write_all(&msg).await?;
         Ok(())
+    }
+
+    /// Returns the unique client ID assigned by the server.
+    pub fn get_client_id(&self) -> usize {
+        self.client_id
+    }
+
+    /// Returns the remote host address of the connected client.
+    pub fn get_remote_host(&self) -> &str {
+        &self.remote_host
+    }
+
+    /// Returns the destination port for repeater connections.
+    /// Returns -1 for direct connections (not using a repeater).
+    pub fn get_destination_port(&self) -> i32 {
+        self.destination_port.map(|p| p as i32).unwrap_or(-1)
+    }
+
+    /// Returns the repeater ID if this client is connected via a repeater.
+    /// Returns None for direct connections.
+    pub fn get_repeater_id(&self) -> Option<&str> {
+        self.repeater_id.as_deref()
+    }
+
+    /// Sets the connection metadata for reverse connections.
+    pub fn set_connection_metadata(&mut self, destination_port: Option<u16>) {
+        self.destination_port = destination_port;
+    }
+
+    /// Sets the repeater metadata for repeater connections.
+    pub fn set_repeater_metadata(&mut self, repeater_id: String, destination_port: Option<u16>) {
+        self.repeater_id = Some(repeater_id);
+        self.destination_port = destination_port;
     }
 }
