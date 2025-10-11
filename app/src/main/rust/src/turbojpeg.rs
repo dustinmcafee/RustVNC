@@ -4,7 +4,7 @@
 //! for high-performance JPEG compression.
 
 use std::ffi::c_void;
-use std::os::raw::{c_int, c_long, c_uchar, c_ulong};
+use std::os::raw::{c_char, c_int, c_uchar, c_ulong};
 
 // TurboJPEG constants
 pub const TJPF_RGB: c_int = 0; // RGB pixel format
@@ -41,7 +41,7 @@ extern "C" {
         flags: c_int,
     ) -> c_int;
     fn tjFree(buffer: *mut c_uchar);
-    fn tjGetErrorStr2(handle: TjHandle) -> *const i8;
+    fn tjGetErrorStr2(handle: TjHandle) -> *const c_char;
 }
 
 /// Safe Rust wrapper for TurboJPEG compression.

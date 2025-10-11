@@ -13,6 +13,7 @@ use tokio::runtime::Runtime;
 use tokio::sync::{mpsc, broadcast};
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use tokio::sync::RwLock;
 
 use crate::vnc::server::VncServer;
 use crate::vnc::server::ServerEvent;
@@ -151,6 +152,7 @@ pub extern "system" fn Java_net_christianbeier_droidvnc_1ng_MainService_vncStart
     port: jint,
     desktop_name: JString,
     password: JString,
+    _http_root_dir: JString,
 ) -> jboolean {
     // Validate dimensions to prevent integer overflow (R3)
     const MAX_DIMENSION: i32 = 8192;
@@ -341,11 +343,6 @@ pub extern "system" fn Java_net_christianbeier_droidvnc_1ng_MainService_vncUpdat
             return JNI_FALSE;
         }
     };
-
-    if buffer_capacity < 0 {
-        error!("Invalid buffer capacity: {}", buffer_capacity);
-        return JNI_FALSE;
-    }
 
     // Copy buffer immediately to avoid use-after-free (R5)
     // Java GC could move/free the buffer while we're using it
@@ -830,6 +827,196 @@ pub extern "system" fn Java_net_christianbeier_droidvnc_1ng_MainService_vncConne
 
     error!("VNC server not initialized");
     0
+}
+
+/// JNI entry point to get the remote host address of a specific VNC client.
+///
+/// # Arguments
+///
+/// * `env` - The JNI environment.
+/// * `_class` - The Java class from which this method is called.
+/// * `client_id` - The client ID (jlong) returned from vncConnectReverse or vncConnectRepeater.
+///
+/// # Returns
+///
+/// A Java String containing the remote host address (IP:port), or null if client not found.
+#[no_mangle]
+#[allow(non_snake_case)]
+pub extern "system" fn Java_net_christianbeier_droidvnc_1ng_MainService_vncGetRemoteHost<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    client_id: jlong,
+) -> JString<'local> {
+    if let Some(server_container) = VNC_SERVER.get() {
+        if let Ok(guard) = server_container.lock() {
+            if let Some(server) = guard.as_ref() {
+                let runtime = get_or_init_vnc_runtime();
+
+                // Find the client by ID
+                let remote_host = runtime.block_on(async {
+                    if let Some(client) = find_client_by_id(server, client_id as usize).await {
+                        let client_guard = client.read().await;
+                        Some(client_guard.get_remote_host().to_string())
+                    } else {
+                        None
+                    }
+                });
+
+                if let Some(host) = remote_host {
+                    if let Ok(jstr) = env.new_string(&host) {
+                        return jstr;
+                    }
+                }
+            }
+        }
+    }
+
+    // Return null if client not found or error
+    JString::default()
+}
+
+/// JNI entry point to get the destination port of a specific VNC client.
+///
+/// # Arguments
+///
+/// * `_env` - The JNI environment.
+/// * `_class` - The Java class from which this method is called.
+/// * `client_id` - The client ID (jlong) returned from vncConnectReverse or vncConnectRepeater.
+///
+/// # Returns
+///
+/// The destination port (jint), or -1 if this is a direct connection or client not found.
+#[no_mangle]
+#[allow(non_snake_case)]
+pub extern "system" fn Java_net_christianbeier_droidvnc_1ng_MainService_vncGetDestinationPort(
+    _env: JNIEnv,
+    _class: JClass,
+    client_id: jlong,
+) -> jint {
+    if let Some(server_container) = VNC_SERVER.get() {
+        if let Ok(guard) = server_container.lock() {
+            if let Some(server) = guard.as_ref() {
+                let runtime = get_or_init_vnc_runtime();
+
+                // Find the client by ID and get destination port
+                return runtime.block_on(async {
+                    if let Some(client) = find_client_by_id(server, client_id as usize).await {
+                        let client_guard = client.read().await;
+                        client_guard.get_destination_port()
+                    } else {
+                        -1
+                    }
+                });
+            }
+        }
+    }
+
+    -1
+}
+
+/// JNI entry point to get the repeater ID of a specific VNC client.
+///
+/// # Arguments
+///
+/// * `env` - The JNI environment.
+/// * `_class` - The Java class from which this method is called.
+/// * `client_id` - The client ID (jlong) returned from vncConnectRepeater.
+///
+/// # Returns
+///
+/// A Java String containing the repeater ID, or null if this is not a repeater connection or client not found.
+#[no_mangle]
+#[allow(non_snake_case)]
+pub extern "system" fn Java_net_christianbeier_droidvnc_1ng_MainService_vncGetRepeaterId<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    client_id: jlong,
+) -> JString<'local> {
+    if let Some(server_container) = VNC_SERVER.get() {
+        if let Ok(guard) = server_container.lock() {
+            if let Some(server) = guard.as_ref() {
+                let runtime = get_or_init_vnc_runtime();
+
+                // Find the client by ID and get repeater ID
+                let repeater_id = runtime.block_on(async {
+                    if let Some(client) = find_client_by_id(server, client_id as usize).await {
+                        let client_guard = client.read().await;
+                        client_guard.get_repeater_id().map(|s| s.to_string())
+                    } else {
+                        None
+                    }
+                });
+
+                if let Some(id) = repeater_id {
+                    if let Ok(jstr) = env.new_string(&id) {
+                        return jstr;
+                    }
+                }
+            }
+        }
+    }
+
+    // Return null if client not found or not a repeater connection
+    JString::default()
+}
+
+/// JNI entry point to disconnect a specific VNC client.
+///
+/// # Arguments
+///
+/// * `_env` - The JNI environment.
+/// * `_class` - The Java class from which this method is called.
+/// * `client_id` - The client ID (jlong) to disconnect.
+///
+/// # Returns
+///
+/// `JNI_TRUE` if the client was found and disconnected, `JNI_FALSE` otherwise.
+#[no_mangle]
+#[allow(non_snake_case)]
+pub extern "system" fn Java_net_christianbeier_droidvnc_1ng_MainService_vncDisconnect(
+    _env: JNIEnv,
+    _class: JClass,
+    client_id: jlong,
+) -> jboolean {
+    if let Some(server_container) = VNC_SERVER.get() {
+        if let Ok(guard) = server_container.lock() {
+            if let Some(server) = guard.as_ref() {
+                let runtime = get_or_init_vnc_runtime();
+
+                // Disconnect the client by ID
+                let result = runtime.block_on(async {
+                    server.disconnect_client(client_id as usize).await
+                });
+
+                if result {
+                    info!("Client {} disconnected successfully", client_id);
+                    return JNI_TRUE;
+                } else {
+                    warn!("Client {} not found for disconnect", client_id);
+                    return JNI_FALSE;
+                }
+            }
+        }
+    }
+
+    JNI_FALSE
+}
+
+/// Helper function to find a client by its ID.
+///
+/// # Arguments
+///
+/// * `server` - The VNC server instance.
+/// * `client_id` - The client ID to search for.
+///
+/// # Returns
+///
+/// An `Option<Arc<RwLock<VncClient>>>` containing the client if found, or None.
+async fn find_client_by_id(
+    server: &VncServer,
+    client_id: usize,
+) -> Option<Arc<tokio::sync::RwLock<crate::vnc::client::VncClient>>> {
+    server.find_client(client_id).await
 }
 
 /// Spawns a long-running asynchronous task to handle VNC server events.

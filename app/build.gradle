@@ -5,19 +5,17 @@ plugins {
 }
 
 android {
-    compileSdk 35
+    compileSdk 36
 
     defaultConfig {
         applicationId "net.christianbeier.droidvnc_ng"
         minSdk 24
-        targetSdk 34
-        versionCode 49
-        versionName "2.12.0"
+        targetSdk 35
+        versionCode 52
+        versionName "2.15.0"
+
 
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
-
-        // CMake build removed - using Rust VNC library instead
-        // The Rust library provides all VNC functionality directly through JNI
 
         ndk {
             debugSymbolLevel = 'FULL'
@@ -32,7 +30,6 @@ android {
         }
     }
 
-    // CMake external build removed - Rust provides native library
     namespace 'net.christianbeier.droidvnc_ng'
 
     compileOptions {
@@ -44,6 +41,9 @@ android {
     }
     buildFeatures {
         buildConfig true
+    }
+    lint {
+        disable 'MissingQuantity'
     }
 }
 
@@ -211,16 +211,16 @@ tasks.whenTaskAdded { task ->
 }
 
 dependencies {
-    implementation 'androidx.appcompat:appcompat:1.7.0'
-    implementation 'androidx.preference:preference:1.2.1'
-    implementation "androidx.core:core:1.16.0"
-    implementation 'com.google.android.material:material:1.12.0'
-    testImplementation 'junit:junit:4.13.2'
-    androidTestImplementation 'androidx.test.ext:junit:1.2.1'
-    androidTestImplementation 'androidx.test.espresso:espresso-core:3.6.1'
-    implementation "org.jetbrains.kotlin:kotlin-stdlib-jdk7:$kotlin_version"
-    implementation "org.jetbrains.kotlinx:kotlinx-serialization-json:1.8.0"
-    implementation "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0"
+     implementation 'androidx.appcompat:appcompat:1.7.1'
+     implementation 'androidx.preference:preference:1.2.1'
+     implementation "androidx.core:core:1.17.0"
+     implementation 'com.google.android.material:material:1.13.0'
+     testImplementation 'junit:junit:4.13.2'
+     androidTestImplementation 'androidx.test.ext:junit:1.3.0'
+     androidTestImplementation 'androidx.test.espresso:espresso-core:3.7.0'
+     implementation "org.jetbrains.kotlin:kotlin-stdlib-jdk7:$kotlin_version"
+     implementation "org.jetbrains.kotlinx:kotlinx-serialization-json:1.9.0"
+     implementation "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2"
 }
 repositories {
     mavenCentral()
