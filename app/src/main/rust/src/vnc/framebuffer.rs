@@ -562,6 +562,9 @@ impl Framebuffer {
     /// framebuffer state at a different location. This enables the use of CopyRect encoding,
     /// which dramatically reduces bandwidth for scrolling and window dragging operations.
     ///
+    /// NOTE: This auto-detection method is no longer used. CopyRect now uses explicit
+    /// tracking via schedule_copy_region() and do_copy_region(), matching libvncserver's approach.
+    ///
     /// # Arguments
     ///
     /// * `region` - The dirty region to check for copy detection.
@@ -571,6 +574,7 @@ impl Framebuffer {
     /// `Some((src_x, src_y))` if the region matches content at a different location in the
     /// previous framebuffer, where `(src_x, src_y)` are the source coordinates.
     /// Returns `None` if no match is found or the region is too small for copy detection.
+    #[allow(dead_code)]
     pub async fn detect_copy_rect(&self, region: &DirtyRegion) -> Option<(u16, u16)> {
         // Don't detect copy for very small regions (not worth the CPU cost)
         const MIN_COPY_SIZE: u16 = 64;
@@ -785,6 +789,105 @@ impl Framebuffer {
 
         // Mark entire framebuffer as dirty after resize
         self.mark_dirty_region(0, 0, new_width, new_height).await;
+
+        Ok(())
+    }
+
+    /// Performs a copy rectangle operation within the framebuffer (libvncserver style).
+    ///
+    /// This method copies pixel data from one region of the framebuffer to another,
+    /// handling overlapping regions correctly by choosing the appropriate iteration direction.
+    /// This is the equivalent of libvncserver's `rfbDoCopyRegion` function.
+    ///
+    /// # Arguments
+    ///
+    /// * `dest_x` - The X coordinate of the destination rectangle.
+    /// * `dest_y` - The Y coordinate of the destination rectangle.
+    /// * `width` - The width of the rectangle to copy.
+    /// * `height` - The height of the rectangle to copy.
+    /// * `dx` - The X offset from destination to source (src_x = dest_x + dx).
+    /// * `dy` - The Y offset from destination to source (src_y = dest_y + dy).
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` if the copy is successful.
+    /// Returns `Err(String)` if the source or destination rectangle is out of bounds.
+    pub async fn do_copy_region(
+        &self,
+        dest_x: u16,
+        dest_y: u16,
+        width: u16,
+        height: u16,
+        dx: i16,
+        dy: i16,
+    ) -> Result<(), String> {
+        // Calculate source coordinates
+        let src_x = (dest_x as i32 + dx as i32) as u16;
+        let src_y = (dest_y as i32 + dy as i32) as u16;
+
+        // Validate bounds
+        if dest_x.saturating_add(width) > self.width()
+            || dest_y.saturating_add(height) > self.height()
+        {
+            return Err(format!(
+                "Destination rectangle out of bounds: ({}, {}, {}, {}) exceeds ({}, {})",
+                dest_x,
+                dest_y,
+                width,
+                height,
+                self.width(),
+                self.height()
+            ));
+        }
+
+        if src_x.saturating_add(width) > self.width() || src_y.saturating_add(height) > self.height()
+        {
+            return Err(format!(
+                "Source rectangle out of bounds: ({}, {}, {}, {}) exceeds ({}, {})",
+                src_x,
+                src_y,
+                width,
+                height,
+                self.width(),
+                self.height()
+            ));
+        }
+
+        let mut data = self.data.write().await;
+        let fb_width = self.width() as usize;
+        let row_bytes = width as usize * 4;
+
+        // Copy rectangle within framebuffer
+        // Choose iteration direction based on dx/dy to handle overlapping regions correctly
+        // (libvncserver uses sraRgnGetReverseIterator for this)
+        if dy < 0 {
+            // Copy top to bottom (forward)
+            for row in 0..height {
+                let src_offset =
+                    ((src_y + row) as usize * fb_width + src_x as usize) * 4;
+                let dest_offset =
+                    ((dest_y + row) as usize * fb_width + dest_x as usize) * 4;
+
+                // Use copy_within for safe overlapping copies
+                data.copy_within(src_offset..src_offset + row_bytes, dest_offset);
+            }
+        } else {
+            // Copy bottom to top (reverse)
+            for row in (0..height).rev() {
+                let src_offset =
+                    ((src_y + row) as usize * fb_width + src_x as usize) * 4;
+                let dest_offset =
+                    ((dest_y + row) as usize * fb_width + dest_x as usize) * 4;
+
+                // Use copy_within for safe overlapping copies
+                data.copy_within(src_offset..src_offset + row_bytes, dest_offset);
+            }
+        }
+
+        drop(data); // Release lock before save_state
+
+        // Update prev_data for future copy detection
+        self.save_state().await;
 
         Ok(())
     }
