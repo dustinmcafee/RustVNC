@@ -30,6 +30,7 @@ pub mod rre;
 pub mod corre;
 pub mod hextile;
 pub mod zlib;
+pub mod zlibhex;
 pub mod tight;
 pub mod zrle;
 
@@ -42,6 +43,7 @@ pub use tight::TightEncoding;
 
 // Re-export persistent encoding functions (RFC 6143 compliant)
 pub use zlib::encode_zlib_persistent;
+pub use zlibhex::encode_zlibhex_persistent;
 pub use zrle::encode_zrle_persistent;
 
 /// A trait defining the interface for VNC encoding implementations.
