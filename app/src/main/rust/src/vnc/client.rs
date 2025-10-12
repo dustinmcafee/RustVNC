@@ -651,7 +651,7 @@ impl VncClient {
 
         // Choose best encoding supported by client
         let encodings = self.encodings.read().await;
-        // Priority order: ZLIB > ZLIBHEX > ZRLE > TIGHT > HEXTILE > RAW
+        // Priority order: ZLIB > ZLIBHEX > ZRLE > TIGHTPNG > TIGHT > HEXTILE > RAW
         // ZLIB, ZLIBHEX, and ZRLE all use persistent compression (RFC 6143 compliant)
         let preferred_encoding = if encodings.contains(&ENCODING_ZLIB) {
             ENCODING_ZLIB
@@ -659,6 +659,8 @@ impl VncClient {
             ENCODING_ZLIBHEX
         } else if encodings.contains(&ENCODING_ZRLE) {
             ENCODING_ZRLE
+        } else if encodings.contains(&ENCODING_TIGHTPNG) {
+            ENCODING_TIGHTPNG
         } else if encodings.contains(&ENCODING_TIGHT) {
             ENCODING_TIGHT
         } else if encodings.contains(&ENCODING_HEXTILE) {
@@ -670,6 +672,7 @@ impl VncClient {
 
         let mut encoding_name = match preferred_encoding {
             ENCODING_TIGHT => "TIGHT",
+            ENCODING_TIGHTPNG => "TIGHTPNG",
             ENCODING_ZRLE => "ZRLE",
             ENCODING_ZLIBHEX => "ZLIBHEX",
             ENCODING_ZLIB => "ZLIB",
