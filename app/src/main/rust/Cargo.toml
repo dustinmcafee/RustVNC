@@ -26,6 +26,7 @@ bytes = "1.5"
 byteorder = "1.5"
 thiserror = "2.0"
 flate2 = "1.0"  # zlib compression
+png = "0.17"     # PNG encoding for TightPng
 # Using libjpeg-turbo via FFI for JPEG compression (built in build.rs)
 des = "0.8"  # DES encryption for VNC authentication
 rand = "0.8"  # Random number generation for challenge

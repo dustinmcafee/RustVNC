@@ -124,6 +124,12 @@ pub const ENCODING_ZLIB: i32 = 6;
 /// and other compression methods for different types of screen content.
 pub const ENCODING_TIGHT: i32 = 7;
 
+/// Encoding type: TightPng.
+///
+/// Like Tight encoding but uses PNG compression instead of JPEG.
+/// Provides lossless compression for high-quality image transmission.
+pub const ENCODING_TIGHTPNG: i32 = -260;
+
 /// Encoding type: ZlibHex.
 ///
 /// Zlib-compressed Hextile encoding. Combines Hextile's tile-based encoding
@@ -202,6 +208,11 @@ pub const HEXTILE_ANY_SUBRECTS: u8 = 1 << 3;
 
 /// Hextile: Subrectangles are colored (not monochrome).
 pub const HEXTILE_SUBRECTS_COLOURED: u8 = 1 << 4;
+
+// Tight subencoding types
+
+/// Tight/TightPng: PNG compression subencoding.
+pub const TIGHT_PNG: u8 = 0x0A;
 
 // Security Types
 
