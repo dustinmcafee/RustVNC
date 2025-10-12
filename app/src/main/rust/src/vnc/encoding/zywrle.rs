@@ -170,10 +170,11 @@ fn wavelet_level(data: &mut [i8], size: usize, level: usize, skip_pixel: usize) 
     let mut offset = 0;
     while offset < end_offset {
         // Process 3 bytes (RGB channels)
-        if offset + ofs < data.len() && offset + 2 < data.len() && offset + ofs + 2 < data.len() {
-            harr(&mut data[offset], &mut data[offset + ofs]);
-            harr(&mut data[offset + 1], &mut data[offset + 1 + ofs]);
-            harr(&mut data[offset + 2], &mut data[offset + 2 + ofs]);
+        if offset + ofs + 2 < data.len() {
+            let (slice1, slice2) = data.split_at_mut(offset + ofs);
+            harr(&mut slice1[offset], &mut slice2[0]);
+            harr(&mut slice1[offset + 1], &mut slice2[1]);
+            harr(&mut slice1[offset + 2], &mut slice2[2]);
         }
         offset += s;
     }
