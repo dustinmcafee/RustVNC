@@ -13,7 +13,6 @@ use tokio::runtime::Runtime;
 use tokio::sync::{mpsc, broadcast};
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use tokio::sync::RwLock;
 
 use crate::vnc::server::VncServer;
 use crate::vnc::server::ServerEvent;
@@ -843,7 +842,7 @@ pub extern "system" fn Java_net_christianbeier_droidvnc_1ng_MainService_vncConne
 #[no_mangle]
 #[allow(non_snake_case)]
 pub extern "system" fn Java_net_christianbeier_droidvnc_1ng_MainService_vncGetRemoteHost<'local>(
-    mut env: JNIEnv<'local>,
+    env: JNIEnv<'local>,
     _class: JClass<'local>,
     client_id: jlong,
 ) -> JString<'local> {
@@ -928,7 +927,7 @@ pub extern "system" fn Java_net_christianbeier_droidvnc_1ng_MainService_vncGetDe
 #[no_mangle]
 #[allow(non_snake_case)]
 pub extern "system" fn Java_net_christianbeier_droidvnc_1ng_MainService_vncGetRepeaterId<'local>(
-    mut env: JNIEnv<'local>,
+    env: JNIEnv<'local>,
     _class: JClass<'local>,
     client_id: jlong,
 ) -> JString<'local> {
@@ -1180,4 +1179,136 @@ fn handle_server_event(event: ServerEvent) {
             }
         }
     }
+}
+
+/// JNI entry point to schedule a copy rectangle operation for all connected clients.
+///
+/// This method schedules a copy operation without performing the actual framebuffer copy.
+/// It is equivalent to libvncserver's `rfbScheduleCopyRect` function.
+///
+/// # Arguments
+///
+/// * `_env` - The JNI environment.
+/// * `_class` - The Java class from which this method is called.
+/// * `x` - The X coordinate of the destination rectangle.
+/// * `y` - The Y coordinate of the destination rectangle.
+/// * `width` - The width of the rectangle.
+/// * `height` - The height of the rectangle.
+/// * `dx` - The X offset from destination to source (src_x = dest_x + dx).
+/// * `dy` - The Y offset from destination to source (src_y = dest_y + dy).
+#[no_mangle]
+#[allow(non_snake_case)]
+pub extern "system" fn Java_net_christianbeier_droidvnc_1ng_MainService_vncScheduleCopyRect(
+    _env: JNIEnv,
+    _class: JClass,
+    x: jint,
+    y: jint,
+    width: jint,
+    height: jint,
+    dx: jint,
+    dy: jint,
+) {
+    // Validate coordinates
+    if x < 0 || y < 0 || width <= 0 || height <= 0 {
+        error!(
+            "Invalid copy rect parameters: x={}, y={}, w={}, h={}",
+            x, y, width, height
+        );
+        return;
+    }
+
+    if let Some(server_container) = VNC_SERVER.get() {
+        if let Ok(guard) = server_container.lock() {
+            if let Some(server) = guard.as_ref() {
+                let runtime = get_or_init_vnc_runtime();
+                let server_clone = server.clone();
+
+                // Spawn async task to schedule copy for all clients
+                runtime.spawn(async move {
+                    server_clone
+                        .schedule_copy_rect(
+                            x as u16,
+                            y as u16,
+                            width as u16,
+                            height as u16,
+                            dx as i16,
+                            dy as i16,
+                        )
+                        .await;
+                });
+            }
+        }
+    }
+}
+
+/// JNI entry point to perform a copy rectangle operation in the framebuffer.
+///
+/// This method performs the actual framebuffer copy and schedules the copy operation
+/// for all connected clients. It is equivalent to libvncserver's `rfbDoCopyRect` function.
+///
+/// # Arguments
+///
+/// * `_env` - The JNI environment.
+/// * `_class` - The Java class from which this method is called.
+/// * `x` - The X coordinate of the destination rectangle.
+/// * `y` - The Y coordinate of the destination rectangle.
+/// * `width` - The width of the rectangle.
+/// * `height` - The height of the rectangle.
+/// * `dx` - The X offset from destination to source (src_x = dest_x + dx).
+/// * `dy` - The Y offset from destination to source (src_y = dest_y + dy).
+///
+/// # Returns
+///
+/// `JNI_TRUE` if the operation is successful, `JNI_FALSE` otherwise.
+#[no_mangle]
+#[allow(non_snake_case)]
+pub extern "system" fn Java_net_christianbeier_droidvnc_1ng_MainService_vncDoCopyRect(
+    _env: JNIEnv,
+    _class: JClass,
+    x: jint,
+    y: jint,
+    width: jint,
+    height: jint,
+    dx: jint,
+    dy: jint,
+) -> jboolean {
+    // Validate coordinates
+    if x < 0 || y < 0 || width <= 0 || height <= 0 {
+        error!(
+            "Invalid copy rect parameters: x={}, y={}, w={}, h={}",
+            x, y, width, height
+        );
+        return JNI_FALSE;
+    }
+
+    if let Some(server_container) = VNC_SERVER.get() {
+        if let Ok(guard) = server_container.lock() {
+            if let Some(server) = guard.as_ref() {
+                let runtime = get_or_init_vnc_runtime();
+
+                // Perform copy and schedule for clients
+                let result = runtime.block_on(server.do_copy_rect(
+                    x as u16,
+                    y as u16,
+                    width as u16,
+                    height as u16,
+                    dx as i16,
+                    dy as i16,
+                ));
+
+                match result {
+                    Ok(()) => {
+                        return JNI_TRUE;
+                    }
+                    Err(e) => {
+                        error!("Failed to perform copy rect: {}", e);
+                        return JNI_FALSE;
+                    }
+                }
+            }
+        }
+    }
+
+    error!("VNC server not initialized");
+    JNI_FALSE
 }

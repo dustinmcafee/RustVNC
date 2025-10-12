@@ -92,8 +92,10 @@ pub struct VncClient {
     /// The region specifically requested by the client for an update, protected by a `RwLock`.
     /// It is written by the message handler and read by the encoder.
     requested_region: RwLock<Option<DirtyRegion>>, // Protected - written by message handler, read by encoder
-    // NOTE: CopyRect is handled via automatic detection in framebuffer.detect_copy_rect()
-    // rather than explicit copyRegion state management (differs from libvncserver approach)
+    /// CopyRect tracking (libvncserver style): destination regions to be copied
+    copy_region: Arc<RwLock<Vec<DirtyRegion>>>, // Destination regions for CopyRect
+    /// Translation vector for CopyRect: (dx, dy) where src = dest + (dx, dy)
+    copy_offset: RwLock<Option<(i16, i16)>>, // (dx, dy) translation for copy operations
     /// The duration to defer sending updates, matching `libvncserver`'s default.
     defer_update_time: Duration, // Constant - set once at init
     /// The timestamp (in nanoseconds since creation) when deferring of updates began (0 if not deferring).
@@ -111,6 +113,7 @@ pub struct VncClient {
     zlib_compressor: RwLock<Option<Compress>>,
     /// Persistent zlib compressor for ZRLE encoding (RFC 6143: one stream per connection).
     /// Protected by RwLock since encoding happens during send_batched_update.
+    #[allow(dead_code)]
     zrle_compressor: RwLock<Option<Compress>>,
     /// Remote host address (IP:port) of the connected client
     remote_host: String,
@@ -239,6 +242,8 @@ impl VncClient {
             continuous_updates: AtomicBool::new(false),
             modified_regions: Arc::new(RwLock::new(Vec::new())),
             requested_region: RwLock::new(None),
+            copy_region: Arc::new(RwLock::new(Vec::new())), // Initialize empty copy region
+            copy_offset: RwLock::new(None), // No copy offset initially
             defer_update_time: Duration::from_millis(5), // Match libvncserver default
             start_deferring_nanos: AtomicU64::new(0), // 0 = not deferring
             creation_time,
@@ -263,6 +268,49 @@ impl VncClient {
     /// An `Arc<RwLock<Vec<DirtyRegion>>>` that can be used as a handle for the client's dirty regions.
     pub fn get_receiver_handle(&self) -> Arc<RwLock<Vec<DirtyRegion>>> {
         self.modified_regions.clone()
+    }
+
+    /// Returns a clone of the `Arc` containing the client's `copy_region`.
+    ///
+    /// This handle can be used to schedule copy operations for this client.
+    ///
+    /// # Returns
+    ///
+    /// An `Arc<RwLock<Vec<DirtyRegion>>>` that can be used as a handle for the client's copy regions.
+    #[allow(dead_code)]
+    pub fn get_copy_region_handle(&self) -> Arc<RwLock<Vec<DirtyRegion>>> {
+        self.copy_region.clone()
+    }
+
+    /// Schedules a copy operation for this client (libvncserver style).
+    ///
+    /// This method adds a region to be sent using CopyRect encoding with the specified offset.
+    /// According to libvncserver's algorithm, if a copy operation with a different offset
+    /// already exists, the old copy region is treated as modified.
+    ///
+    /// # Arguments
+    ///
+    /// * `region` - The destination region to be copied.
+    /// * `dx` - The X offset from destination to source (src_x = dest_x + dx).
+    /// * `dy` - The Y offset from destination to source (src_y = dest_y + dy).
+    pub async fn schedule_copy_region(&self, region: DirtyRegion, dx: i16, dy: i16) {
+        let mut copy_regions = self.copy_region.write().await;
+        let mut copy_offset = self.copy_offset.write().await;
+        let mut modified_regions = self.modified_regions.write().await;
+
+        // Check if we have an existing copy with a different offset
+        if let Some((existing_dx, existing_dy)) = *copy_offset {
+            if existing_dx != dx || existing_dy != dy {
+                // Different offset - treat existing copy region as modified
+                // This matches libvncserver's behavior in rfbScheduleCopyRegion
+                modified_regions.extend(copy_regions.drain(..));
+                copy_regions.clear();
+            }
+        }
+
+        // Add the new region to copy_region
+        copy_regions.push(region);
+        *copy_offset = Some((dx, dy));
     }
 
     /// Enters the main message loop for the VncClient, handling incoming data from the client
@@ -515,9 +563,10 @@ impl VncClient {
 
     /// Sends a batched framebuffer update message to the client.
     ///
-    /// This function collects all currently dirty regions for the client, intersects them
-    /// with any client-requested region, and then encodes these regions using the client's
-    /// preferred encoding (e.g., TIGHT, RAW, or COPYRECT).
+    /// This function implements libvncserver's update sending algorithm:
+    /// 1. Send CopyRect regions first (from copy_region with stored offset)
+    /// 2. Then send modified regions (from modified_regions)
+    ///
     /// The update includes multiple rectangles in a single message to improve efficiency.
     ///
     /// # Returns
@@ -530,51 +579,80 @@ impl VncClient {
 
         info!("send_batched_update called, requested region: {:?}", requested);
 
-        // Get regions to send, intersected with requested region (libvncserver style)
-        // This implements: updateRegion = requestedRegion ∩ modifiedRegion
-        let regions_to_send: Vec<DirtyRegion> = {
-            let mut regions = self.modified_regions.write().await;
-            info!("Modified regions count: {}", regions.len());
-            if regions.is_empty() {
-                info!("No modified regions, skipping update");
-                return Ok(());
-            }
+        // STEP 1: Get copy regions to send (libvncserver: copyRegion sent FIRST)
+        let (copy_regions_to_send, copy_src_offset): (Vec<DirtyRegion>, Option<(i16, i16)>) = {
+            let mut copy_regions = self.copy_region.write().await;
+            let mut copy_offset = self.copy_offset.write().await;
 
-            // Drain and filter regions, keeping only those that intersect with requested region
-            let num_rects = regions.len().min(self.max_rects_per_update);
-            let drained: Vec<DirtyRegion> = regions.drain(..num_rects).collect();
-
-            if let Some(req) = requested {
-                // Intersect each modified region with requested region
-                drained.iter()
-                    .filter_map(|region| region.intersect(&req))
-                    .collect()
+            if copy_regions.is_empty() {
+                (Vec::new(), None)
             } else {
-                // No requested region set, send all modified regions (shouldn't happen normally)
-                drained
+                let offset = *copy_offset;
+                let regions: Vec<DirtyRegion> = if let Some(req) = requested {
+                    // Intersect each copy region with requested region
+                    copy_regions.iter()
+                        .filter_map(|region| region.intersect(&req))
+                        .collect()
+                } else {
+                    copy_regions.drain(..).collect()
+                };
+
+                // Clear copy tracking after draining
+                copy_regions.clear();
+                *copy_offset = None;
+
+                (regions, offset)
             }
         };
 
-        // If no regions after intersection, nothing to send
-        if regions_to_send.is_empty() {
+        // STEP 2: Get modified regions to send (libvncserver: modifiedRegion sent AFTER copyRegion)
+        let modified_regions_to_send: Vec<DirtyRegion> = {
+            let mut regions = self.modified_regions.write().await;
+
+            if regions.is_empty() {
+                Vec::new()
+            } else {
+                // Drain up to max_rects_per_update, but account for copy rects already counted
+                let remaining_slots = self.max_rects_per_update.saturating_sub(copy_regions_to_send.len());
+                let num_rects = regions.len().min(remaining_slots);
+                let drained: Vec<DirtyRegion> = regions.drain(..num_rects).collect();
+
+                if let Some(req) = requested {
+                    // Intersect each modified region with requested region
+                    drained.iter()
+                        .filter_map(|region| region.intersect(&req))
+                        .collect()
+                } else {
+                    // No requested region set, send all modified regions (shouldn't happen normally)
+                    drained
+                }
+            }
+        };
+
+        // If no regions to send at all, nothing to do
+        if copy_regions_to_send.is_empty() && modified_regions_to_send.is_empty() {
+            info!("No regions to send (copy={}, modified={})", copy_regions_to_send.len(), modified_regions_to_send.len());
             return Ok(());
         }
 
         let start = Instant::now();
-        let num_rects = regions_to_send.len();
+        let total_rects = copy_regions_to_send.len() + modified_regions_to_send.len();
 
         let mut response = BytesMut::new();
 
         // Message type
         response.put_u8(SERVER_MSG_FRAMEBUFFER_UPDATE);
         response.put_u8(0); // padding
-        response.put_u16(num_rects as u16); // number of rectangles
+        response.put_u16(total_rects as u16); // number of rectangles
 
         // Choose best encoding supported by client
         let encodings = self.encodings.read().await;
-        // Temporarily prioritize ZLIB over TIGHT to test JPEG encoder compatibility
+        // Priority order: ZLIB > ZRLE > TIGHT > HEXTILE > RAW
+        // ZLIB and ZRLE both use persistent compression (RFC 6143 compliant)
         let preferred_encoding = if encodings.contains(&ENCODING_ZLIB) {
             ENCODING_ZLIB
+        } else if encodings.contains(&ENCODING_ZRLE) {
+            ENCODING_ZRLE
         } else if encodings.contains(&ENCODING_TIGHT) {
             ENCODING_TIGHT
         } else if encodings.contains(&ENCODING_HEXTILE) {
@@ -582,7 +660,6 @@ impl VncClient {
         } else {
             ENCODING_RAW
         };
-        let use_copyrect = encodings.contains(&ENCODING_COPYRECT);
         drop(encodings); // Release lock
 
         let mut encoding_name = match preferred_encoding {
@@ -593,35 +670,41 @@ impl VncClient {
         };
 
         let mut total_pixels = 0u64;
+        let mut copy_rect_count = 0;
 
         // Load quality/compression settings atomically
         let jpeg_quality = self.jpeg_quality.load(Ordering::Relaxed);
         let compression_level = self.compression_level.load(Ordering::Relaxed);
 
-        // Send each dirty region as a rectangle
-        for region in &regions_to_send {
-            // Try to detect if this is a copy operation (for CopyRect encoding)
+        // STEP 1: Send copy regions FIRST (libvncserver style)
+        if let Some((dx, dy)) = copy_src_offset {
+            for region in &copy_regions_to_send {
+                // Calculate source position from destination + offset
+                // In libvncserver: src = dest + (dx, dy)
+                let src_x = (region.x as i32 + dx as i32) as u16;
+                let src_y = (region.y as i32 + dy as i32) as u16;
 
-            if use_copyrect {
-                if let Some((src_x, src_y)) = self.framebuffer.detect_copy_rect(region).await {
-                    // Use CopyRect encoding
-                    let rect = Rectangle {
-                        x: region.x,
-                        y: region.y,
-                        width: region.width,
-                        height: region.height,
-                        encoding: ENCODING_COPYRECT,
-                    };
-                    rect.write_header(&mut response);
+                // Use CopyRect encoding
+                let rect = Rectangle {
+                    x: region.x,
+                    y: region.y,
+                    width: region.width,
+                    height: region.height,
+                    encoding: ENCODING_COPYRECT,
+                };
+                rect.write_header(&mut response);
 
-                    // CopyRect data is just src_x and src_y
-                    response.put_u16(src_x);
-                    response.put_u16(src_y);
+                // CopyRect data is just src_x and src_y
+                response.put_u16(src_x);
+                response.put_u16(src_y);
 
-                    total_pixels += (region.width as u64) * (region.height as u64);
-                    continue;
-                }
+                total_pixels += (region.width as u64) * (region.height as u64);
+                copy_rect_count += 1;
             }
+        }
+
+        // STEP 2: Send modified regions (libvncserver: sent AFTER copy regions)
+        for region in &modified_regions_to_send {
 
             // Get pixel data
             let pixel_data = match self.framebuffer.get_rect(region.x, region.y, region.width, region.height).await {
@@ -634,7 +717,7 @@ impl VncClient {
             };
 
             // Encode using selected encoding with fallback to RAW
-            // ZLIB requires persistent compressor per RFC 6143
+            // ZLIB and ZRLE require persistent compressor per RFC 6143
             let (actual_encoding, encoded) = if preferred_encoding == ENCODING_ZLIB {
                 // Initialize ZLIB compressor lazily on first use
                 let mut zlib_lock = self.zlib_compressor.write().await;
@@ -648,6 +731,28 @@ impl VncClient {
                     Ok(data) => (ENCODING_ZLIB, BytesMut::from(&data[..])),
                     Err(e) => {
                         error!("ZLIB encoding failed: {}, falling back to RAW", e);
+                        encoding_name = "RAW";
+                        if let Some(raw_encoder) = encoding::get_encoder(ENCODING_RAW) {
+                            (ENCODING_RAW, raw_encoder.encode(&pixel_data, region.width, region.height, jpeg_quality, compression_level))
+                        } else {
+                            (ENCODING_RAW, BytesMut::new())
+                        }
+                    }
+                }
+            } else if preferred_encoding == ENCODING_ZRLE {
+                // Initialize ZRLE compressor lazily on first use
+                let mut zrle_lock = self.zrle_compressor.write().await;
+                if zrle_lock.is_none() {
+                    *zrle_lock = Some(Compress::new(Compression::new(compression_level as u32), true));
+                    info!("Initialized ZRLE compressor with level {}", compression_level);
+                }
+                let zrle_comp = zrle_lock.as_mut().unwrap();
+
+                let pixel_format = PixelFormat::rgba32();
+                match encoding::encode_zrle_persistent(&pixel_data, region.width, region.height, &pixel_format, zrle_comp) {
+                    Ok(data) => (ENCODING_ZRLE, BytesMut::from(&data[..])),
+                    Err(e) => {
+                        error!("ZRLE encoding failed: {}, falling back to RAW", e);
                         encoding_name = "RAW";
                         if let Some(raw_encoder) = encoding::get_encoder(ENCODING_RAW) {
                             (ENCODING_RAW, raw_encoder.encode(&pixel_data, region.width, region.height, jpeg_quality, compression_level))
@@ -695,8 +800,8 @@ impl VncClient {
 
         let elapsed = start.elapsed();
         info!(
-            "Sent {} rects ({} pixels total) using {} ({} bytes, {}ms encode+send)",
-            num_rects, total_pixels, encoding_name, response.len(), elapsed.as_millis()
+            "Sent {} rects ({} CopyRect + {} encoded, {} pixels total) using {} ({} bytes, {}ms encode+send)",
+            total_rects, copy_rect_count, modified_regions_to_send.len(), total_pixels, encoding_name, response.len(), elapsed.as_millis()
         );
 
         Ok(())
