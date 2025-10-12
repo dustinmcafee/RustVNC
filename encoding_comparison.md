@@ -240,6 +240,15 @@ Level 4: 62%  | Level 9: 100%
 
 ---
 
+### H.264 - H.264 Video Encoding (0x48323634) ⚠️
+**Status:** Constant defined only (matching libvncserver)
+- `ENCODING_H264` constant exists in protocol.rs
+- NO implementation code
+- **Note:** libvncserver removed H.264 implementation in v0.9.11 (2016-12-30) because it was "broken and unmaintained"
+- Constant exists for RFB protocol compatibility only
+
+---
+
 ## Not Implemented (libvncserver has these)
 
 The following encodings are available in libvncserver but completely absent from RustVNC:
@@ -247,9 +256,10 @@ The following encodings are available in libvncserver but completely absent from
 1. **TightPng (-260)** - Tight encoding with PNG compression instead of JPEG
 2. **Ultra (9)** - UltraVNC's proprietary encoding
 3. **ZYWRLE (17)** - Wavelet-based lossy compression for low-bandwidth
-4. **H264 (0x48323634)** - H.264 video encoding for very low bandwidth
-5. **Cache encodings** - Various TurboVNC cache-based optimizations
-6. **XOR encodings** - TurboVNC XOR-based optimizations
+4. **Cache encodings** - Various TurboVNC cache-based optimizations
+5. **XOR encodings** - TurboVNC XOR-based optimizations
+
+**Note:** H.264 (0x48323634) is NOT in this list because libvncserver also does not implement it (removed in 2016). RustVNC matches libvncserver by having the constant defined but not implemented.
 
 ---
 
@@ -260,8 +270,8 @@ The following encodings are available in libvncserver but completely absent from
 | Status | Count | Encodings |
 |--------|-------|-----------|
 | **Fully Implemented & Active** | 9 | Raw, CopyRect, RRE, CoRRE, Hextile, Zlib, ZlibHex, Tight, ZRLE |
-| **Defined but Not Implemented** | 3 | Cursor, Desktop Size, TRLE |
-| **Not Implemented** | 7+ | TightPng, Ultra, ZYWRLE, H264, Cache, XOR, etc. |
+| **Defined but Not Implemented** | 4 | Cursor, Desktop Size, TRLE, H.264 |
+| **Not Implemented** | 6+ | TightPng, Ultra, ZYWRLE, Cache, XOR, etc. |
 
 ### Key Differences from libvncserver
 
@@ -277,8 +287,9 @@ The following encodings are available in libvncserver but completely absent from
 **❌ Missing Features:**
 - No cursor shape updates
 - No desktop size change notifications
-- No advanced encodings (H264, ZYWRLE, TightPng)
+- No advanced encodings (ZYWRLE, TightPng)
 - No cache or XOR optimizations
+- H.264 constant defined but not implemented (matches libvncserver - removed in 2016)
 
 ---
 
@@ -327,8 +338,9 @@ For a 1920x1080 RGBA32 framebuffer full update:
 
 ### Medium Priority
 1. **TightPng encoding** - PNG compression for lossless quality
-2. **H264 encoding** - For video/gaming scenarios
-3. **ZYWRLE encoding** - For very low bandwidth scenarios
+2. **ZYWRLE encoding** - For very low bandwidth scenarios
+
+**Note:** H.264 encoding is intentionally NOT on this list. Both RustVNC and libvncserver define the constant but don't implement H.264 (libvncserver removed it in 2016 as "broken and unmaintained").
 
 ### Low Priority
 1. Cache-based optimizations
@@ -352,4 +364,6 @@ The implementation prioritizes:
 - **Simplicity** by focusing on proven, widely-supported encodings
 - **Correctness** by matching libvncserver's behavior exactly (RFC 6143 compliant)
 
-For most use cases, RustVNC's encoding support is **sufficient and well-optimized**. Advanced encodings like H264 and ZYWRLE would benefit specialized scenarios but are not critical for general desktop sharing.
+For most use cases, RustVNC's encoding support is **sufficient and well-optimized**. Advanced encodings like ZYWRLE and TightPng would benefit specialized scenarios but are not critical for general desktop sharing.
+
+**H.264 Status:** Both RustVNC and libvncserver define the H.264 encoding constant (0x48323634) for RFB protocol compatibility, but neither implements the actual encoding. libvncserver removed H.264 in version 0.9.11 (2016) because the implementation was "broken and unmaintained". RustVNC maintains protocol parity by defining the constant without implementation.

@@ -141,6 +141,15 @@ pub const ENCODING_TRLE: i32 = 15;
 /// Combines TRLE with zlib compression.
 pub const ENCODING_ZRLE: i32 = 16;
 
+/// Encoding type: H.264 video encoding.
+///
+/// H.264 video compression for very low bandwidth scenarios.
+/// Note: This encoding is defined in the RFB protocol but NOT implemented.
+/// libvncserver removed H.264 support in v0.9.11 (2016) due to it being
+/// broken and unmaintained. This constant exists for protocol compatibility only.
+#[allow(dead_code)]
+pub const ENCODING_H264: i32 = 0x48323634;
+
 /// Pseudo-encoding: Rich Cursor.
 ///
 /// Allows the server to send cursor shape and hotspot information.
