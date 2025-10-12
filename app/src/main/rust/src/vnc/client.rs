@@ -111,6 +111,9 @@ pub struct VncClient {
     /// Persistent zlib compressor for Zlib encoding (RFC 6143: one stream per connection).
     /// Protected by RwLock since encoding happens during send_batched_update.
     zlib_compressor: RwLock<Option<Compress>>,
+    /// Persistent zlib compressor for ZlibHex encoding (RFC 6143: one stream per connection).
+    /// Protected by RwLock since encoding happens during send_batched_update.
+    zlibhex_compressor: RwLock<Option<Compress>>,
     /// Persistent zlib compressor for ZRLE encoding (RFC 6143: one stream per connection).
     /// Protected by RwLock since encoding happens during send_batched_update.
     #[allow(dead_code)]
@@ -250,6 +253,7 @@ impl VncClient {
             max_rects_per_update: 50, // Match libvncserver default
             send_mutex: Arc::new(tokio::sync::Mutex::new(())),
             zlib_compressor: RwLock::new(None), // Initialized lazily when first used
+            zlibhex_compressor: RwLock::new(None), // Initialized lazily when first used
             zrle_compressor: RwLock::new(None), // Initialized lazily when first used
             remote_host,
             destination_port: None, // None for direct inbound connections
@@ -647,10 +651,12 @@ impl VncClient {
 
         // Choose best encoding supported by client
         let encodings = self.encodings.read().await;
-        // Priority order: ZLIB > ZRLE > TIGHT > HEXTILE > RAW
-        // ZLIB and ZRLE both use persistent compression (RFC 6143 compliant)
+        // Priority order: ZLIB > ZLIBHEX > ZRLE > TIGHT > HEXTILE > RAW
+        // ZLIB, ZLIBHEX, and ZRLE all use persistent compression (RFC 6143 compliant)
         let preferred_encoding = if encodings.contains(&ENCODING_ZLIB) {
             ENCODING_ZLIB
+        } else if encodings.contains(&ENCODING_ZLIBHEX) {
+            ENCODING_ZLIBHEX
         } else if encodings.contains(&ENCODING_ZRLE) {
             ENCODING_ZRLE
         } else if encodings.contains(&ENCODING_TIGHT) {
@@ -665,6 +671,7 @@ impl VncClient {
         let mut encoding_name = match preferred_encoding {
             ENCODING_TIGHT => "TIGHT",
             ENCODING_ZRLE => "ZRLE",
+            ENCODING_ZLIBHEX => "ZLIBHEX",
             ENCODING_ZLIB => "ZLIB",
             _ => "RAW",
         };
@@ -731,6 +738,27 @@ impl VncClient {
                     Ok(data) => (ENCODING_ZLIB, BytesMut::from(&data[..])),
                     Err(e) => {
                         error!("ZLIB encoding failed: {}, falling back to RAW", e);
+                        encoding_name = "RAW";
+                        if let Some(raw_encoder) = encoding::get_encoder(ENCODING_RAW) {
+                            (ENCODING_RAW, raw_encoder.encode(&pixel_data, region.width, region.height, jpeg_quality, compression_level))
+                        } else {
+                            (ENCODING_RAW, BytesMut::new())
+                        }
+                    }
+                }
+            } else if preferred_encoding == ENCODING_ZLIBHEX {
+                // Initialize ZLIBHEX compressor lazily on first use
+                let mut zlibhex_lock = self.zlibhex_compressor.write().await;
+                if zlibhex_lock.is_none() {
+                    *zlibhex_lock = Some(Compress::new(Compression::new(compression_level as u32), true));
+                    info!("Initialized ZLIBHEX compressor with level {}", compression_level);
+                }
+                let zlibhex_comp = zlibhex_lock.as_mut().unwrap();
+
+                match encoding::encode_zlibhex_persistent(&pixel_data, region.width, region.height, zlibhex_comp) {
+                    Ok(data) => (ENCODING_ZLIBHEX, BytesMut::from(&data[..])),
+                    Err(e) => {
+                        error!("ZLIBHEX encoding failed: {}, falling back to RAW", e);
                         encoding_name = "RAW";
                         if let Some(raw_encoder) = encoding::get_encoder(ENCODING_RAW) {
                             (ENCODING_RAW, raw_encoder.encode(&pixel_data, region.width, region.height, jpeg_quality, compression_level))
