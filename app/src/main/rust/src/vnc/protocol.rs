@@ -124,6 +124,12 @@ pub const ENCODING_ZLIB: i32 = 6;
 /// and other compression methods for different types of screen content.
 pub const ENCODING_TIGHT: i32 = 7;
 
+/// Encoding type: ZlibHex.
+///
+/// Zlib-compressed Hextile encoding. Combines Hextile's tile-based encoding
+/// with zlib compression for improved bandwidth efficiency.
+pub const ENCODING_ZLIBHEX: i32 = 8;
+
 /// Encoding type: Tile Run-Length Encoding.
 ///
 /// An efficient encoding for palettized and run-length compressed data.
