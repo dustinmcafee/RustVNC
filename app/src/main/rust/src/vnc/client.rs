@@ -118,6 +118,9 @@ pub struct VncClient {
     /// Protected by RwLock since encoding happens during send_batched_update.
     #[allow(dead_code)]
     zrle_compressor: RwLock<Option<Compress>>,
+    /// ZYWRLE quality level (0 = disabled, 1-3 = quality levels, higher = better quality).
+    /// Stored as AtomicU8 for atomic access. Updated based on client's quality setting.
+    zywrle_level: AtomicU8, // Atomic - updated when ZYWRLE encoding is detected
     /// Remote host address (IP:port) of the connected client
     remote_host: String,
     /// Destination port for repeater connections (None for direct connections)
@@ -255,6 +258,7 @@ impl VncClient {
             zlib_compressor: RwLock::new(None), // Initialized lazily when first used
             zlibhex_compressor: RwLock::new(None), // Initialized lazily when first used
             zrle_compressor: RwLock::new(None), // Initialized lazily when first used
+            zywrle_level: AtomicU8::new(0), // Disabled by default, updated when ZYWRLE is requested
             remote_host,
             destination_port: None, // None for direct inbound connections
             repeater_id: None, // None for direct inbound connections
@@ -651,14 +655,26 @@ impl VncClient {
 
         // Choose best encoding supported by client
         let encodings = self.encodings.read().await;
-        // Priority order: ZLIB > ZLIBHEX > ZRLE > TIGHTPNG > TIGHT > HEXTILE > RAW
-        // ZLIB, ZLIBHEX, and ZRLE all use persistent compression (RFC 6143 compliant)
+        // Priority order: ZLIB > ZLIBHEX > ZRLE > ZYWRLE > TIGHTPNG > TIGHT > HEXTILE > RAW
+        // ZLIB, ZLIBHEX, ZRLE, and ZYWRLE all use persistent compression (RFC 6143 compliant)
         let preferred_encoding = if encodings.contains(&ENCODING_ZLIB) {
             ENCODING_ZLIB
         } else if encodings.contains(&ENCODING_ZLIBHEX) {
             ENCODING_ZLIBHEX
         } else if encodings.contains(&ENCODING_ZRLE) {
             ENCODING_ZRLE
+        } else if encodings.contains(&ENCODING_ZYWRLE) {
+            // Update ZYWRLE level based on quality setting (matches libvncserver logic)
+            let quality = self.jpeg_quality.load(Ordering::Relaxed);
+            let level = if quality < 42 {  // quality_level < 3
+                3  // Lowest quality, highest compression
+            } else if quality < 79 {  // quality_level < 6
+                2  // Medium quality
+            } else {
+                1  // Highest quality, lowest compression
+            };
+            self.zywrle_level.store(level, Ordering::Relaxed);
+            ENCODING_ZYWRLE
         } else if encodings.contains(&ENCODING_TIGHTPNG) {
             ENCODING_TIGHTPNG
         } else if encodings.contains(&ENCODING_TIGHT) {
@@ -673,6 +689,7 @@ impl VncClient {
         let mut encoding_name = match preferred_encoding {
             ENCODING_TIGHT => "TIGHT",
             ENCODING_TIGHTPNG => "TIGHTPNG",
+            ENCODING_ZYWRLE => "ZYWRLE",
             ENCODING_ZRLE => "ZRLE",
             ENCODING_ZLIBHEX => "ZLIBHEX",
             ENCODING_ZLIB => "ZLIB",
@@ -792,6 +809,54 @@ impl VncClient {
                         }
                     }
                 }
+            } else if preferred_encoding == ENCODING_ZYWRLE {
+                // ZYWRLE: Apply wavelet preprocessing then use ZRLE encoder
+                let level = self.zywrle_level.load(Ordering::Relaxed) as usize;
+
+                // Allocate coefficient buffer for wavelet transform
+                let buf_size = (region.width as usize) * (region.height as usize);
+                let mut coeff_buf = vec![0i32; buf_size];
+
+                // Apply ZYWRLE wavelet preprocessing (matches libvncserver's ZYWRLE_ANALYZE)
+                let result = if let Some(transformed_data) = encoding::zywrle_analyze(
+                    &pixel_data,
+                    region.width as usize,
+                    region.height as usize,
+                    level,
+                    &mut coeff_buf
+                ) {
+                    // Now encode the transformed data with ZRLE (shares the ZRLE compressor)
+                    let mut zrle_lock = self.zrle_compressor.write().await;
+                    if zrle_lock.is_none() {
+                        *zrle_lock = Some(Compress::new(Compression::new(compression_level as u32), true));
+                        info!("Initialized ZRLE compressor for ZYWRLE with level {}", compression_level);
+                    }
+                    let zrle_comp = zrle_lock.as_mut().unwrap();
+
+                    let pixel_format = PixelFormat::rgba32();
+                    match encoding::encode_zrle_persistent(&transformed_data, region.width, region.height, &pixel_format, zrle_comp) {
+                        Ok(data) => (ENCODING_ZYWRLE, BytesMut::from(&data[..])),
+                        Err(e) => {
+                            error!("ZYWRLE encoding failed: {}, falling back to RAW", e);
+                            encoding_name = "RAW";
+                            if let Some(raw_encoder) = encoding::get_encoder(ENCODING_RAW) {
+                                (ENCODING_RAW, raw_encoder.encode(&pixel_data, region.width, region.height, jpeg_quality, compression_level))
+                            } else {
+                                (ENCODING_RAW, BytesMut::new())
+                            }
+                        }
+                    }
+                } else {
+                    // Analysis failed (dimensions too small), fall back to RAW
+                    error!("ZYWRLE analysis failed (dimensions too small), falling back to RAW");
+                    encoding_name = "RAW";
+                    if let Some(raw_encoder) = encoding::get_encoder(ENCODING_RAW) {
+                        (ENCODING_RAW, raw_encoder.encode(&pixel_data, region.width, region.height, jpeg_quality, compression_level))
+                    } else {
+                        (ENCODING_RAW, BytesMut::new())
+                    }
+                };
+                result
             } else if let Some(encoder) = encoding::get_encoder(preferred_encoding) {
                 (preferred_encoding, encoder.encode(&pixel_data, region.width, region.height, jpeg_quality, compression_level))
             } else {
