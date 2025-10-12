@@ -34,6 +34,7 @@ pub mod zlibhex;
 pub mod tight;
 pub mod tightpng;
 pub mod zrle;
+pub mod zywrle;
 
 // Re-export encoding implementations
 pub use raw::RawEncoding;
@@ -47,6 +48,9 @@ pub use tightpng::TightPngEncoding;
 pub use zlib::encode_zlib_persistent;
 pub use zlibhex::encode_zlibhex_persistent;
 pub use zrle::encode_zrle_persistent;
+
+// Re-export ZYWRLE analysis function
+pub use zywrle::zywrle_analyze;
 
 /// A trait defining the interface for VNC encoding implementations.
 ///

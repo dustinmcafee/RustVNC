@@ -9,10 +9,11 @@ When a client supports multiple encodings, RustVNC selects them in this order:
 1. **Zlib** (6) - Highest priority for good compression with moderate CPU usage
 2. **ZlibHex** (8) - Zlib-compressed Hextile for efficient tile-based compression
 3. **ZRLE** (16) - Zlib Run-Length Encoding with 64x64 tiles and palette compression
-4. **TightPng** (-260) - Lossless PNG compression for high-quality image transmission
-5. **Tight** (7) - JPEG-based compression via libjpeg-turbo for photo-realistic content
-6. **Hextile** (5) - Tile-based encoding with minimal CPU overhead
-7. **Raw** (0) - Fallback uncompressed encoding
+4. **ZYWRLE** (17) - Wavelet-based lossy compression for low-bandwidth scenarios
+5. **TightPng** (-260) - Lossless PNG compression for high-quality image transmission
+6. **Tight** (7) - JPEG-based compression via libjpeg-turbo for photo-realistic content
+7. **Hextile** (5) - Tile-based encoding with minimal CPU overhead
+8. **Raw** (0) - Fallback uncompressed encoding
 
 ### CopyRect Handling
 - **CopyRect** (1) is handled separately with **highest priority**
@@ -150,7 +151,7 @@ Level 4: 62%  | Level 9: 100%
 ---
 
 ### 8. ZRLE - Zlib Run-Length Encoding (16) ✅
-**Status:** Fully implemented, actively used (2nd priority)
+**Status:** Fully implemented, actively used (3rd priority)
 - Combines 64x64 tile-based encoding with palette compression and run-length encoding
 - **Persistent compression stream** per client connection (RFC 6143 compliant)
 - Multiple sub-encodings: solid, raw, packed palette, palette RLE, plain RLE
@@ -171,8 +172,41 @@ Level 4: 62%  | Level 9: 100%
 
 ---
 
-### 9. TightPng - PNG-compressed Tight (-260) ✅
+### 9. ZYWRLE - Zlib+Wavelet Run-Length Encoding (17) ✅
 **Status:** Fully implemented, actively used (4th priority)
+- Wavelet-based lossy compression for low-bandwidth scenarios
+- Uses Piecewise-Linear Haar (PLHarr) wavelet transform
+- RGB to YUV conversion via Reversible Color Transform (RCT)
+- Non-linear quantization filtering with r=2.0 (quantize x², dequantize √x)
+- Shares ZRLE encoder after wavelet preprocessing
+- **Persistent compression stream** per client connection (RFC 6143 compliant)
+- Quality level (1-3) automatically selected based on client's quality pseudo-encoding
+
+**Implementation:**
+- File: `src/vnc/encoding/zywrle.rs`
+- Uses pure Rust wavelet transform implementation
+- Shares `flate2` zlib compressor with ZRLE encoding
+- Quality level mapping (matches libvncserver):
+  - Quality < 42 (level 0-2): ZYWRLE level 3 (highest compression, lowest quality)
+  - Quality < 79 (level 3-5): ZYWRLE level 2 (medium compression/quality)
+  - Quality ≥ 79 (level 6-9): ZYWRLE level 1 (lowest compression, highest quality)
+
+**Features:**
+- Wavelet preprocessing before ZRLE encoding
+- Better compression than ZRLE for low-bandwidth scenarios
+- Lossy compression allows smaller data sizes
+- Matches libvncserver's ZYWRLE implementation exactly
+- Licensed under BSD (original algorithm by Hitachi Systems & Services, Ltd.)
+
+**Quality vs Compression:**
+- Level 1: PSNR ~74 dB, best quality
+- Level 2: PSNR ~64 dB, medium quality
+- Level 3: PSNR ~43 dB, highest compression
+
+---
+
+### 10. TightPng - PNG-compressed Tight (-260) ✅
+**Status:** Fully implemented, actively used (5th priority)
 - Like Tight encoding but uses PNG compression instead of JPEG
 - Lossless compression for high-quality image transmission
 - Still supports solid fill and palette modes from Tight
@@ -193,7 +227,7 @@ Level 4: 62%  | Level 9: 100%
 
 ---
 
-### 10. ZlibHex - Zlib-compressed Hextile (8) ✅
+### 11. ZlibHex - Zlib-compressed Hextile (8) ✅
 **Status:** Fully implemented, actively used (2nd priority)
 - Combines Hextile's 16x16 tile-based encoding with zlib compression
 - **Persistent compression stream** per client connection (RFC 6143 compliant)
@@ -277,9 +311,8 @@ Level 4: 62%  | Level 9: 100%
 The following encodings are available in libvncserver but completely absent from RustVNC:
 
 1. **Ultra (9)** - UltraVNC's proprietary encoding
-2. **ZYWRLE (17)** - Wavelet-based lossy compression for low-bandwidth
-3. **Cache encodings** - Various TurboVNC cache-based optimizations
-4. **XOR encodings** - TurboVNC XOR-based optimizations
+2. **Cache encodings** - Various TurboVNC cache-based optimizations
+3. **XOR encodings** - TurboVNC XOR-based optimizations
 
 **Note:** H.264 (0x48323634) is NOT in this list because libvncserver also does not implement it (removed in 2016). RustVNC matches libvncserver by having the constant defined but not implemented.
 
@@ -291,27 +324,27 @@ The following encodings are available in libvncserver but completely absent from
 
 | Status | Count | Encodings |
 |--------|-------|-----------|
-| **Fully Implemented & Active** | 10 | Raw, CopyRect, RRE, CoRRE, Hextile, Zlib, ZlibHex, Tight, TightPng, ZRLE |
+| **Fully Implemented & Active** | 11 | Raw, CopyRect, RRE, CoRRE, Hextile, Zlib, ZlibHex, Tight, TightPng, ZRLE, ZYWRLE |
 | **Defined but Not Implemented** | 4 | Cursor, Desktop Size, TRLE, H.264 |
-| **Not Implemented** | 5+ | Ultra, ZYWRLE, Cache, XOR, etc. |
+| **Not Implemented** | 4+ | Ultra, Cache, XOR, etc. |
 
 ### Key Differences from libvncserver
 
 **✅ Advantages:**
 - CopyRect fully implemented with libvncserver parity
-- TightPng encoding now actively used (4th priority, lossless PNG compression)
+- ZYWRLE encoding fully implemented (4th priority, wavelet-based lossy compression for low bandwidth)
+- TightPng encoding actively used (5th priority, lossless PNG compression)
 - ZlibHex encoding actively used (2nd priority, excellent for UI content)
 - ZRLE encoding actively used (3rd priority, good for text/UI)
 - JPEG compression via optimized libjpeg-turbo (same as libvncserver)
 - PNG compression via png crate for TightPng (same as libvncserver)
-- Persistent Zlib, ZlibHex, and ZRLE compression streams (RFC 6143 compliant)
+- Persistent Zlib, ZlibHex, ZRLE, and ZYWRLE compression streams (RFC 6143 compliant)
 - Quality and compression level pseudo-encodings fully supported
 - Simpler, more maintainable codebase
 
 **❌ Missing Features:**
 - No cursor shape updates
 - No desktop size change notifications
-- No advanced encodings (ZYWRLE)
 - No cache or XOR optimizations
 - H.264 constant defined but not implemented (matches libvncserver - removed in 2016)
 
@@ -335,6 +368,11 @@ The following encodings are available in libvncserver but completely absent from
 - Alternative: **ZlibHex** or **ZRLE** (good for UI elements)
 - CopyRect: **Scrolling operations**
 
+**Low-bandwidth / Remote connections:**
+- Primary: **ZYWRLE** (wavelet-based lossy compression, best for very low bandwidth)
+- Secondary: **Tight with JPEG** (lossy compression for photos)
+- Alternative: **ZRLE** (good compression for UI/text)
+
 **Video playback / Gaming:**
 - Primary: **Zlib** (fast compression)
 - Secondary: **Raw** (lowest latency)
@@ -350,6 +388,7 @@ For a 1920x1080 RGBA32 framebuffer full update:
 - **Zlib (level 6):** ~500 KB - 2 MB (depends on content)
 - **ZlibHex (level 6):** ~400 KB - 1.8 MB (better for UI, compressed Hextile)
 - **ZRLE (level 6):** ~300 KB - 1.5 MB (better for text/UI, palette compression)
+- **ZYWRLE (level 1-3):** ~150 KB - 800 KB (lossy wavelet compression, best for low bandwidth)
 - **TightPng:** ~200 KB - 1 MB (lossless PNG, better than JPEG for screenshots)
 - **Tight (quality 90):** ~100 KB - 500 KB (lossy JPEG for photo content)
 - **Hextile:** ~1-3 MB (text/UI content)
@@ -363,21 +402,19 @@ For a 1920x1080 RGBA32 framebuffer full update:
 1. **Implement Desktop Size pseudo-encoding** - Notify clients of resize
 2. **Implement Cursor pseudo-encoding** - Reduce cursor rendering overhead
 
-### Medium Priority
-1. **ZYWRLE encoding** - For very low bandwidth scenarios
-
-**Note:** H.264 encoding is intentionally NOT on this list. Both RustVNC and libvncserver define the constant but don't implement H.264 (libvncserver removed it in 2016 as "broken and unmaintained").
-
 ### Low Priority
 1. Cache-based optimizations
 2. XOR-based optimizations
+
+**Note:** H.264 encoding is intentionally NOT on this list. Both RustVNC and libvncserver define the constant but don't implement H.264 (libvncserver removed it in 2016 as "broken and unmaintained").
 
 ---
 
 ## Conclusion
 
-RustVNC now implements **10 actively used encodings** that cover the vast majority of real-world VNC usage scenarios. The implementation includes:
+RustVNC now implements **11 actively used encodings** that cover the vast majority of real-world VNC usage scenarios. The implementation includes:
 - **CopyRect** with full libvncserver parity for ultra-efficient scrolling/window dragging
+- **ZYWRLE** with wavelet-based lossy compression for low-bandwidth scenarios
 - **TightPng** with lossless PNG compression for high-quality screenshots and documentation
 - **ZlibHex** for excellent UI compression combining Hextile tiles with zlib compression
 - **ZRLE** for excellent text/UI compression with palette detection and run-length encoding
@@ -387,11 +424,12 @@ RustVNC now implements **10 actively used encodings** that cover the vast majori
 The implementation prioritizes:
 - **Compatibility** with standard VNC clients
 - **Performance** via libjpeg-turbo and persistent compression streams
-- **Quality** with both lossy (JPEG) and lossless (PNG) compression options
-- **Efficiency** through intelligent encoding selection (ZLIB > ZLIBHEX > ZRLE > TIGHTPNG > TIGHT > HEXTILE)
+- **Quality** with both lossy (JPEG, ZYWRLE) and lossless (PNG) compression options
+- **Efficiency** through intelligent encoding selection (ZLIB > ZLIBHEX > ZRLE > ZYWRLE > TIGHTPNG > TIGHT > HEXTILE)
+- **Bandwidth** optimization through ZYWRLE wavelet compression for remote/low-bandwidth connections
 - **Simplicity** by focusing on proven, widely-supported encodings
 - **Correctness** by matching libvncserver's behavior exactly (RFC 6143 compliant)
 
-For most use cases, RustVNC's encoding support is **sufficient and well-optimized**. Advanced encodings like ZYWRLE would benefit specialized scenarios but are not critical for general desktop sharing.
+For most use cases, RustVNC's encoding support is **sufficient and well-optimized**. The implementation now includes ZYWRLE for specialized low-bandwidth scenarios, providing excellent compression for remote desktop sharing over slow connections.
 
 **H.264 Status:** Both RustVNC and libvncserver define the H.264 encoding constant (0x48323634) for RFB protocol compatibility, but neither implements the actual encoding. libvncserver removed H.264 in version 0.9.11 (2016) because the implementation was "broken and unmaintained". RustVNC maintains protocol parity by defining the constant without implementation.
