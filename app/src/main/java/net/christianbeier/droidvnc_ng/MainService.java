@@ -201,7 +201,7 @@ public class MainService extends Service {
 
     static {
         // order is important here
-        System.loadLibrary("droidvnc-ng");
+        System.loadLibrary("droidvnc_ng");
     }
 
     private static native void vncInit();
