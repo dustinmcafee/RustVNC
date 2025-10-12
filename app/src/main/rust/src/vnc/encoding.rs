@@ -32,6 +32,7 @@ pub mod hextile;
 pub mod zlib;
 pub mod zlibhex;
 pub mod tight;
+pub mod tightpng;
 pub mod zrle;
 
 // Re-export encoding implementations
@@ -40,6 +41,7 @@ pub use rre::RreEncoding;
 pub use corre::CorRreEncoding;
 pub use hextile::HextileEncoding;
 pub use tight::TightEncoding;
+pub use tightpng::TightPngEncoding;
 
 // Re-export persistent encoding functions (RFC 6143 compliant)
 pub use zlib::encode_zlib_persistent;
@@ -87,7 +89,8 @@ pub fn get_encoder(encoding_type: i32) -> Option<Box<dyn Encoding>> {
         ENCODING_CORRE => Some(Box::new(CorRreEncoding)),
         ENCODING_HEXTILE => Some(Box::new(HextileEncoding)),
         ENCODING_TIGHT => Some(Box::new(TightEncoding)),
-        // ZLIB and ZRLE use persistent compressors, handled directly in client.rs
+        ENCODING_TIGHTPNG => Some(Box::new(TightPngEncoding)),
+        // ZLIB, ZLIBHEX, and ZRLE use persistent compressors, handled directly in client.rs
         _ => None,
     }
 }
