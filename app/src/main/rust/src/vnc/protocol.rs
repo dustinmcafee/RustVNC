@@ -147,6 +147,14 @@ pub const ENCODING_TRLE: i32 = 15;
 /// Combines TRLE with zlib compression.
 pub const ENCODING_ZRLE: i32 = 16;
 
+/// Encoding type: ZYWRLE (Zlib+Wavelet+Run-Length Encoding).
+///
+/// Wavelet-based lossy compression for low-bandwidth scenarios.
+/// Uses Piecewise-Linear Haar wavelet transform, RCT (Reversible Color Transform)
+/// for RGB to YUV conversion, and non-linear quantization filtering.
+/// Shares the ZRLE encoder but applies wavelet preprocessing first.
+pub const ENCODING_ZYWRLE: i32 = 17;
+
 /// Encoding type: H.264 video encoding.
 ///
 /// H.264 video compression for very low bandwidth scenarios.

@@ -664,6 +664,30 @@ impl VncServer {
         removed
     }
 
+    /// Attempts to acquire a read lock on the clients list without blocking.
+    ///
+    /// This is used by JNI methods to avoid blocking the main thread and causing ANR.
+    /// If the lock cannot be acquired immediately, returns an error.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(RwLockReadGuard)` if the lock was acquired, `Err` if it would block.
+    pub fn clients_try_read(&self) -> Result<tokio::sync::RwLockReadGuard<Vec<Arc<RwLock<VncClient>>>>, tokio::sync::TryLockError> {
+        self.clients.try_read()
+    }
+
+    /// Attempts to acquire a write lock on the clients list without blocking.
+    ///
+    /// This is used by JNI methods to avoid blocking the main thread and causing ANR.
+    /// If the lock cannot be acquired immediately, returns an error.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(RwLockWriteGuard)` if the lock was acquired, `Err` if it would block.
+    pub fn clients_try_write(&self) -> Result<tokio::sync::RwLockWriteGuard<Vec<Arc<RwLock<VncClient>>>>, tokio::sync::TryLockError> {
+        self.clients.try_write()
+    }
+
     /// Schedules a copy rectangle operation for all connected clients (libvncserver style).
     ///
     /// This method iterates through all clients and schedules the specified region to be
