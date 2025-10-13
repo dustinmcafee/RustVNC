@@ -247,16 +247,15 @@ fn filter_wavelet_square(buf: &mut [i32], width: usize, height: usize, level: us
             for x in 0..(width / s) {
                 let idx = row_start + y * s * width + x * s;
                 if idx < buf.len() {
-                    let bytes = unsafe {
-                        std::slice::from_raw_parts_mut(
-                            &mut buf[idx] as *mut i32 as *mut u8,
-                            4
-                        )
-                    };
+                    let pixel = &mut buf[idx];
+                    let mut bytes = pixel.to_le_bytes();
+
                     // Apply filter to each channel (V, Y, U stored in bytes 2, 1, 0)
                     bytes[2] = ZYWRLE_CONV[param[2]][bytes[2] as usize] as u8;
                     bytes[1] = ZYWRLE_CONV[param[1]][bytes[1] as usize] as u8;
                     bytes[0] = ZYWRLE_CONV[param[0]][bytes[0] as usize] as u8;
+
+                    *pixel = i32::from_le_bytes(bytes);
                 }
             }
         }
@@ -307,13 +306,9 @@ fn rgb_to_yuv(buf: &mut [i32], data: &[u8], width: usize, height: usize) {
                 if v == -128 { v += 1; }
 
                 // Store as VYU in little-endian order (matches libvncserver ZYWRLE_SAVE_COEFF)
-                let bytes = unsafe {
-                    std::slice::from_raw_parts_mut(&mut buf[buf_idx] as *mut i32 as *mut i8, 4)
-                };
-                bytes[2] = v as i8;  // V in byte 2
-                bytes[1] = y as i8;  // Y in byte 1
-                bytes[0] = u as i8;  // U in byte 0
-                bytes[3] = 0;        // Padding
+                // U in byte 0, Y in byte 1, V in byte 2
+                let bytes: [u8; 4] = [u as u8, y as u8, v as u8, 0];
+                buf[buf_idx] = i32::from_le_bytes(bytes);
 
                 buf_idx += 1;
             }
@@ -363,21 +358,19 @@ fn pack_coeff(buf: &[i32], dst: &mut [u8], r: usize, width: usize, height: usize
         ph_offset += (s >> 1) * width;
     }
 
-    let mut dst_idx = 0;
     for _ in 0..(height / s) {
         for _ in 0..(width / s) {
-            if ph_offset < buf.len() && dst_idx + 2 < dst.len() {
-                let bytes = unsafe {
-                    std::slice::from_raw_parts(&buf[ph_offset] as *const i32 as *const u8, 4)
-                };
+            let dst_idx = ph_offset * 4;
+            if ph_offset < buf.len() && dst_idx + 3 < dst.len() {
+                let pixel = buf[ph_offset];
+                let bytes = pixel.to_le_bytes();
                 // Load VYU and save as RGB (for 32bpp RGBA format)
-                dst[dst_idx] = bytes[2] as u8;      // V -> R
-                dst[dst_idx + 1] = bytes[1] as u8;  // Y -> G
-                dst[dst_idx + 2] = bytes[0] as u8;  // U -> B
-                dst[dst_idx + 3] = 0;               // A
+                dst[dst_idx] = bytes[2];      // V -> R
+                dst[dst_idx + 1] = bytes[1];  // Y -> G
+                dst[dst_idx + 2] = bytes[0];  // U -> B
+                dst[dst_idx + 3] = 0;         // A
             }
             ph_offset += s;
-            dst_idx += 4;
         }
         ph_offset += (s - 1) * width;
     }
