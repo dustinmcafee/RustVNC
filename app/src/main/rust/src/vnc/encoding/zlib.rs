@@ -37,7 +37,8 @@ pub fn encode_zlib_persistent(
     let max_compressed_size = pixel_data.len() + (pixel_data.len() / 100) + 12;
     let mut compressed_output = vec![0u8; max_compressed_size];
 
-    // Track total_out before compression (libvncserver style)
+    // Track total_in and total_out before compression
+    let previous_in = compressor.total_in();
     let previous_out = compressor.total_out();
 
     // Single deflate() call with Z_SYNC_FLUSH (RFC 6143 Section 7.7.2)
@@ -47,11 +48,11 @@ pub fn encode_zlib_persistent(
         FlushCompress::Sync
     )?;
 
-    // Calculate actual compressed length
+    // Calculate actual compressed length and consumed input
     let compressed_len = (compressor.total_out() - previous_out) as usize;
+    let total_consumed = (compressor.total_in() - previous_in) as usize;
 
     // Verify all input was consumed
-    let total_consumed = (compressor.total_in() - (previous_out - compressed_len as u64)) as usize;
     if total_consumed < pixel_data.len() {
         return Err(io::Error::new(
             io::ErrorKind::Other,
