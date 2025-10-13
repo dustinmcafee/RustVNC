@@ -597,17 +597,26 @@ impl VncClient {
             } else {
                 let offset = *copy_offset;
                 let regions: Vec<DirtyRegion> = if let Some(req) = requested {
-                    // Intersect each copy region with requested region
-                    copy_regions.iter()
-                        .filter_map(|region| region.intersect(&req))
-                        .collect()
+                    // Filter and drain: only take regions that intersect with requested region
+                    // This preserves non-intersecting regions for later updates
+                    let mut result = Vec::new();
+                    copy_regions.retain(|region| {
+                        if let Some(intersection) = region.intersect(&req) {
+                            result.push(intersection);
+                            false // Remove from copy_regions (drained)
+                        } else {
+                            true // Keep in copy_regions for later
+                        }
+                    });
+                    result
                 } else {
                     copy_regions.drain(..).collect()
                 };
 
-                // Clear copy tracking after draining
-                copy_regions.clear();
-                *copy_offset = None;
+                // If we drained all regions, clear the offset
+                if copy_regions.is_empty() {
+                    *copy_offset = None;
+                }
 
                 (regions, offset)
             }
@@ -620,19 +629,31 @@ impl VncClient {
             if regions.is_empty() {
                 Vec::new()
             } else {
-                // Drain up to max_rects_per_update, but account for copy rects already counted
+                // Calculate how many regions we can send
                 let remaining_slots = self.max_rects_per_update.saturating_sub(copy_regions_to_send.len());
                 let num_rects = regions.len().min(remaining_slots);
-                let drained: Vec<DirtyRegion> = regions.drain(..num_rects).collect();
 
                 if let Some(req) = requested {
-                    // Intersect each modified region with requested region
-                    drained.iter()
-                        .filter_map(|region| region.intersect(&req))
-                        .collect()
+                    // Filter and drain: only take regions that intersect with requested region
+                    // This preserves non-intersecting regions for later updates
+                    let mut result = Vec::new();
+                    let mut drained_count = 0;
+
+                    regions.retain(|region| {
+                        if drained_count >= num_rects {
+                            true // Keep remaining regions (hit limit)
+                        } else if let Some(intersection) = region.intersect(&req) {
+                            result.push(intersection);
+                            drained_count += 1;
+                            false // Remove from regions (drained)
+                        } else {
+                            true // Keep in regions for later (doesn't intersect)
+                        }
+                    });
+                    result
                 } else {
-                    // No requested region set, send all modified regions (shouldn't happen normally)
-                    drained
+                    // No requested region set, drain up to num_rects
+                    regions.drain(..num_rects).collect()
                 }
             }
         };

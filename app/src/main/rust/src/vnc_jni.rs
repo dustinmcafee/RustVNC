@@ -38,6 +38,9 @@ static MAIN_SERVICE_CLASS: OnceCell<jni::objects::GlobalRef> = OnceCell::new();
 #[allow(dead_code)]
 static NEXT_CLIENT_ID: AtomicU64 = AtomicU64::new(1);
 
+// Flag to prevent concurrent framebuffer updates
+static FRAMEBUFFER_UPDATE_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
+
 /// Initializes or retrieves the global Tokio runtime for the VNC server.
 ///
 /// This function ensures that a single instance of the Tokio multi-threaded runtime
@@ -105,16 +108,36 @@ pub extern "system" fn Java_net_christianbeier_droidvnc_1ng_MainService_vncInit(
     }
 
     // Get and store class references
-    if let Ok(input_class) = env.find_class("net/christianbeier/droidvnc_ng/InputService") {
-        if let Ok(global_ref) = env.new_global_ref(input_class) {
-            let _ = INPUT_SERVICE_CLASS.set(global_ref);
+    match env.find_class("net/christianbeier/droidvnc_ng/InputService") {
+        Ok(input_class) => {
+            match env.new_global_ref(input_class) {
+                Ok(global_ref) => {
+                    if INPUT_SERVICE_CLASS.set(global_ref).is_err() {
+                        error!("INPUT_SERVICE_CLASS was already set");
+                    } else {
+                        info!("InputService class reference cached successfully");
+                    }
+                }
+                Err(e) => error!("Failed to create global ref for InputService: {}", e),
+            }
         }
+        Err(e) => error!("Failed to find InputService class: {}", e),
     }
 
-    if let Ok(main_class) = env.find_class("net/christianbeier/droidvnc_ng/MainService") {
-        if let Ok(global_ref) = env.new_global_ref(main_class) {
-            let _ = MAIN_SERVICE_CLASS.set(global_ref);
+    match env.find_class("net/christianbeier/droidvnc_ng/MainService") {
+        Ok(main_class) => {
+            match env.new_global_ref(main_class) {
+                Ok(global_ref) => {
+                    if MAIN_SERVICE_CLASS.set(global_ref).is_err() {
+                        error!("MAIN_SERVICE_CLASS was already set");
+                    } else {
+                        info!("MainService class reference cached successfully");
+                    }
+                }
+                Err(e) => error!("Failed to create global ref for MainService: {}", e),
+            }
         }
+        Err(e) => error!("Failed to find MainService class: {}", e),
     }
 
     // Initialize server container
@@ -353,19 +376,40 @@ pub extern "system" fn Java_net_christianbeier_droidvnc_1ng_MainService_vncUpdat
     };
     // JNI buffer reference no longer needed after this point
 
+    // Skip if an update is already in progress to prevent flooding the runtime
+    // This provides rate limiting similar to the old block_on() approach
+    if FRAMEBUFFER_UPDATE_IN_PROGRESS.compare_exchange(
+        false,
+        true,
+        Ordering::SeqCst,
+        Ordering::SeqCst
+    ).is_err() {
+        // Update already in progress, skip this one
+        return JNI_TRUE;
+    }
+
     if let Some(server_container) = VNC_SERVER.get() {
         if let Ok(guard) = server_container.lock() {
             if let Some(server) = guard.as_ref() {
                 let rt = get_or_init_vnc_runtime();
-                if let Err(e) = rt.block_on(server.framebuffer().update_from_slice(&buffer_copy)) {
-                    error!("Failed to update framebuffer: {}", e);
-                    return JNI_FALSE;
-                }
-                // Framebuffer automatically marks itself dirty
+                let server_clone = server.clone();
+
+                // Spawn async task instead of blocking to prevent ANR
+                rt.spawn(async move {
+                    if let Err(e) = server_clone.framebuffer().update_from_slice(&buffer_copy).await {
+                        error!("Failed to update framebuffer: {}", e);
+                    }
+                    // Clear the flag to allow next update
+                    FRAMEBUFFER_UPDATE_IN_PROGRESS.store(false, Ordering::SeqCst);
+                });
+
                 return JNI_TRUE;
             }
         }
     }
+
+    // If we failed to spawn, reset the flag
+    FRAMEBUFFER_UPDATE_IN_PROGRESS.store(false, Ordering::SeqCst);
 
     JNI_FALSE
 }
@@ -457,25 +501,46 @@ pub extern "system" fn Java_net_christianbeier_droidvnc_1ng_MainService_vncUpdat
         buffer_slice.to_vec()
     };
 
+    // Skip if an update is already in progress to prevent flooding the runtime
+    // This provides rate limiting similar to the old block_on() approach
+    if FRAMEBUFFER_UPDATE_IN_PROGRESS.compare_exchange(
+        false,
+        true,
+        Ordering::SeqCst,
+        Ordering::SeqCst
+    ).is_err() {
+        // Update already in progress, skip this one
+        return JNI_TRUE;
+    }
+
     if let Some(server_container) = VNC_SERVER.get() {
         if let Ok(guard) = server_container.lock() {
             if let Some(server) = guard.as_ref() {
                 let rt = get_or_init_vnc_runtime();
-                if let Err(e) = rt.block_on(server.framebuffer().update_cropped(
-                    &buffer_copy,
-                    crop_x as u16,
-                    crop_y as u16,
-                    crop_width as u16,
-                    crop_height as u16,
-                )) {
-                    error!("Failed to update cropped framebuffer: {}", e);
-                    return JNI_FALSE;
-                }
-                // Framebuffer automatically marks itself dirty
+                let server_clone = server.clone();
+
+                // Spawn async task instead of blocking to prevent ANR
+                rt.spawn(async move {
+                    if let Err(e) = server_clone.framebuffer().update_cropped(
+                        &buffer_copy,
+                        crop_x as u16,
+                        crop_y as u16,
+                        crop_width as u16,
+                        crop_height as u16,
+                    ).await {
+                        error!("Failed to update cropped framebuffer: {}", e);
+                    }
+                    // Clear the flag to allow next update
+                    FRAMEBUFFER_UPDATE_IN_PROGRESS.store(false, Ordering::SeqCst);
+                });
+
                 return JNI_TRUE;
             }
         }
     }
+
+    // If we failed to spawn, reset the flag
+    FRAMEBUFFER_UPDATE_IN_PROGRESS.store(false, Ordering::SeqCst);
 
     JNI_FALSE
 }
@@ -531,8 +596,11 @@ pub extern "system" fn Java_net_christianbeier_droidvnc_1ng_MainService_vncNewFr
             if let Some(server) = guard.as_ref() {
                 let runtime = get_or_init_vnc_runtime();
 
-                // Call the resize method on the framebuffer
-                // The resize method uses interior mutability (atomic width/height)
+                // Must block here - vncUpdateFramebuffer depends on resize completing
+                // This is OK because:
+                // 1. Only called during screen rotation (infrequent)
+                // 2. Fast operation (just memory allocation)
+                // 3. Java code expects synchronous completion
                 if let Err(e) = runtime.block_on(server.framebuffer().resize(width, height)) {
                     error!("Failed to resize framebuffer: {}", e);
                     return JNI_FALSE;
@@ -842,35 +910,31 @@ pub extern "system" fn Java_net_christianbeier_droidvnc_1ng_MainService_vncConne
 #[no_mangle]
 #[allow(non_snake_case)]
 pub extern "system" fn Java_net_christianbeier_droidvnc_1ng_MainService_vncGetRemoteHost<'local>(
-    env: JNIEnv<'local>,
+    mut env: JNIEnv<'local>,
     _class: JClass<'local>,
     client_id: jlong,
 ) -> JString<'local> {
     if let Some(server_container) = VNC_SERVER.get() {
         if let Ok(guard) = server_container.lock() {
             if let Some(server) = guard.as_ref() {
-                let runtime = get_or_init_vnc_runtime();
-
-                // Find the client by ID
-                let remote_host = runtime.block_on(async {
-                    if let Some(client) = find_client_by_id(server, client_id as usize).await {
-                        let client_guard = client.read().await;
-                        Some(client_guard.get_remote_host().to_string())
-                    } else {
-                        None
-                    }
-                });
-
-                if let Some(host) = remote_host {
-                    if let Ok(jstr) = env.new_string(&host) {
-                        return jstr;
+                // Use try_read() for non-blocking access to avoid ANR
+                if let Ok(clients) = server.clients_try_read() {
+                    for client_arc in clients.iter() {
+                        if let Ok(client_guard) = client_arc.try_read() {
+                            if client_guard.get_client_id() == client_id as usize {
+                                let host = client_guard.get_remote_host().to_string();
+                                if let Ok(jstr) = env.new_string(&host) {
+                                    return jstr;
+                                }
+                            }
+                        }
                     }
                 }
             }
         }
     }
 
-    // Return null if client not found or error
+    // Return null if client not found or lock contention
     JString::default()
 }
 
@@ -895,17 +959,16 @@ pub extern "system" fn Java_net_christianbeier_droidvnc_1ng_MainService_vncGetDe
     if let Some(server_container) = VNC_SERVER.get() {
         if let Ok(guard) = server_container.lock() {
             if let Some(server) = guard.as_ref() {
-                let runtime = get_or_init_vnc_runtime();
-
-                // Find the client by ID and get destination port
-                return runtime.block_on(async {
-                    if let Some(client) = find_client_by_id(server, client_id as usize).await {
-                        let client_guard = client.read().await;
-                        client_guard.get_destination_port()
-                    } else {
-                        -1
+                // Use try_read() for non-blocking access to avoid ANR
+                if let Ok(clients) = server.clients_try_read() {
+                    for client_arc in clients.iter() {
+                        if let Ok(client_guard) = client_arc.try_read() {
+                            if client_guard.get_client_id() == client_id as usize {
+                                return client_guard.get_destination_port();
+                            }
+                        }
                     }
-                });
+                }
             }
         }
     }
@@ -927,28 +990,25 @@ pub extern "system" fn Java_net_christianbeier_droidvnc_1ng_MainService_vncGetDe
 #[no_mangle]
 #[allow(non_snake_case)]
 pub extern "system" fn Java_net_christianbeier_droidvnc_1ng_MainService_vncGetRepeaterId<'local>(
-    env: JNIEnv<'local>,
+    mut env: JNIEnv<'local>,
     _class: JClass<'local>,
     client_id: jlong,
 ) -> JString<'local> {
     if let Some(server_container) = VNC_SERVER.get() {
         if let Ok(guard) = server_container.lock() {
             if let Some(server) = guard.as_ref() {
-                let runtime = get_or_init_vnc_runtime();
-
-                // Find the client by ID and get repeater ID
-                let repeater_id = runtime.block_on(async {
-                    if let Some(client) = find_client_by_id(server, client_id as usize).await {
-                        let client_guard = client.read().await;
-                        client_guard.get_repeater_id().map(|s| s.to_string())
-                    } else {
-                        None
-                    }
-                });
-
-                if let Some(id) = repeater_id {
-                    if let Ok(jstr) = env.new_string(&id) {
-                        return jstr;
+                // Use try_read() for non-blocking access to avoid ANR
+                if let Ok(clients) = server.clients_try_read() {
+                    for client_arc in clients.iter() {
+                        if let Ok(client_guard) = client_arc.try_read() {
+                            if client_guard.get_client_id() == client_id as usize {
+                                if let Some(id) = client_guard.get_repeater_id() {
+                                    if let Ok(jstr) = env.new_string(id) {
+                                        return jstr;
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -980,19 +1040,27 @@ pub extern "system" fn Java_net_christianbeier_droidvnc_1ng_MainService_vncDisco
     if let Some(server_container) = VNC_SERVER.get() {
         if let Ok(guard) = server_container.lock() {
             if let Some(server) = guard.as_ref() {
-                let runtime = get_or_init_vnc_runtime();
+                // Use try_write() for non-blocking access to avoid ANR
+                if let Ok(mut clients) = server.clients_try_write() {
+                    let initial_len = clients.len();
 
-                // Disconnect the client by ID
-                let result = runtime.block_on(async {
-                    server.disconnect_client(client_id as usize).await
-                });
+                    // Find and remove the client with matching ID
+                    clients.retain(|client_arc| {
+                        if let Ok(client_guard) = client_arc.try_read() {
+                            client_guard.get_client_id() != client_id as usize
+                        } else {
+                            true // Keep if we can't read (lock contention)
+                        }
+                    });
 
-                if result {
-                    info!("Client {} disconnected successfully", client_id);
-                    return JNI_TRUE;
-                } else {
-                    warn!("Client {} not found for disconnect", client_id);
-                    return JNI_FALSE;
+                    let removed = clients.len() < initial_len;
+                    if removed {
+                        info!("Client {} disconnected successfully", client_id);
+                        return JNI_TRUE;
+                    } else {
+                        warn!("Client {} not found for disconnect", client_id);
+                        return JNI_FALSE;
+                    }
                 }
             }
         }
