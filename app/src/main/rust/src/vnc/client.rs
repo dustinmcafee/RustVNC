@@ -692,12 +692,13 @@ impl VncClient {
 
         // Choose best encoding supported by client
         let encodings = self.encodings.read().await;
-        // Priority order: ZLIB > ZLIBHEX > ZRLE > ZYWRLE > TIGHTPNG > TIGHT > HEXTILE > RAW
+        // Priority order: TIGHT > TIGHTPNG > ZRLE > ZYWRLE > ZLIBHEX > ZLIB > HEXTILE > RAW
+        // This matches libvncserver's typical priority (Tight offers best compression/speed trade-off)
         // ZLIB, ZLIBHEX, ZRLE, and ZYWRLE all use persistent compression (RFC 6143 compliant)
-        let preferred_encoding = if encodings.contains(&ENCODING_ZLIB) {
-            ENCODING_ZLIB
-        } else if encodings.contains(&ENCODING_ZLIBHEX) {
-            ENCODING_ZLIBHEX
+        let preferred_encoding = if encodings.contains(&ENCODING_TIGHT) {
+            ENCODING_TIGHT
+        } else if encodings.contains(&ENCODING_TIGHTPNG) {
+            ENCODING_TIGHTPNG
         } else if encodings.contains(&ENCODING_ZRLE) {
             ENCODING_ZRLE
         } else if encodings.contains(&ENCODING_ZYWRLE) {
@@ -712,10 +713,10 @@ impl VncClient {
             };
             self.zywrle_level.store(level, Ordering::Relaxed);
             ENCODING_ZYWRLE
-        } else if encodings.contains(&ENCODING_TIGHTPNG) {
-            ENCODING_TIGHTPNG
-        } else if encodings.contains(&ENCODING_TIGHT) {
-            ENCODING_TIGHT
+        } else if encodings.contains(&ENCODING_ZLIBHEX) {
+            ENCODING_ZLIBHEX
+        } else if encodings.contains(&ENCODING_ZLIB) {
+            ENCODING_ZLIB
         } else if encodings.contains(&ENCODING_HEXTILE) {
             ENCODING_HEXTILE
         } else {
