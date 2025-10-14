@@ -47,4 +47,5 @@ pub mod encoding;
 pub mod auth;
 pub mod client;
 pub mod repeater;
+pub mod translate;
 

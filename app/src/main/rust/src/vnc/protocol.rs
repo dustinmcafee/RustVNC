@@ -322,6 +322,134 @@ impl PixelFormat {
             && self.blue_shift == 16
     }
 
+    /// Validates that this pixel format is supported by the server.
+    ///
+    /// Checks that the format uses valid bits-per-pixel values and is either
+    /// true-color or a supported color-mapped format.
+    ///
+    /// # Returns
+    ///
+    /// `true` if the format is valid and supported, `false` otherwise.
+    pub fn is_valid(&self) -> bool {
+        // Check bits per pixel is valid
+        if self.bits_per_pixel != 8
+            && self.bits_per_pixel != 16
+            && self.bits_per_pixel != 24
+            && self.bits_per_pixel != 32
+        {
+            return false;
+        }
+
+        // Check depth is reasonable
+        if self.depth == 0 || self.depth > 32 {
+            return false;
+        }
+
+        // For non-truecolor (color-mapped), only 8bpp is supported
+        if self.true_colour_flag == 0 && self.bits_per_pixel != 8 {
+            return false;
+        }
+
+        // For truecolor, validate color component ranges
+        if self.true_colour_flag != 0 {
+            // Check that max values fit in the bit depth
+            let bits_needed = |max: u16| -> u8 {
+                if max == 0 {
+                    0
+                } else {
+                    (16 - max.leading_zeros()) as u8
+                }
+            };
+
+            let red_bits = bits_needed(self.red_max);
+            let green_bits = bits_needed(self.green_max);
+            let blue_bits = bits_needed(self.blue_max);
+
+            // Total bits should not exceed depth
+            if red_bits + green_bits + blue_bits > self.depth {
+                return false;
+            }
+
+            // Shifts should not cause overlap or exceed bit depth
+            if self.red_shift >= 32 || self.green_shift >= 32 || self.blue_shift >= 32 {
+                return false;
+            }
+        }
+
+        true
+    }
+
+    /// Creates a 16-bit RGB565 pixel format.
+    ///
+    /// RGB565 uses 5 bits for red, 6 bits for green, and 5 bits for blue.
+    /// This is a common format for embedded displays and bandwidth-constrained clients.
+    ///
+    /// # Returns
+    ///
+    /// A `PixelFormat` instance configured for 16-bit RGB565.
+    #[allow(dead_code)]
+    pub fn rgb565() -> Self {
+        Self {
+            bits_per_pixel: 16,
+            depth: 16,
+            big_endian_flag: 0,
+            true_colour_flag: 1,
+            red_max: 31,    // 5 bits
+            green_max: 63,  // 6 bits
+            blue_max: 31,   // 5 bits
+            red_shift: 11,
+            green_shift: 5,
+            blue_shift: 0,
+        }
+    }
+
+    /// Creates a 16-bit RGB555 pixel format.
+    ///
+    /// RGB555 uses 5 bits for each of red, green, and blue, with 1 unused bit.
+    ///
+    /// # Returns
+    ///
+    /// A `PixelFormat` instance configured for 16-bit RGB555.
+    #[allow(dead_code)]
+    pub fn rgb555() -> Self {
+        Self {
+            bits_per_pixel: 16,
+            depth: 15,
+            big_endian_flag: 0,
+            true_colour_flag: 1,
+            red_max: 31,    // 5 bits
+            green_max: 31,  // 5 bits
+            blue_max: 31,   // 5 bits
+            red_shift: 10,
+            green_shift: 5,
+            blue_shift: 0,
+        }
+    }
+
+    /// Creates an 8-bit BGR233 pixel format.
+    ///
+    /// BGR233 uses 2 bits for blue, 3 bits for green, and 3 bits for red.
+    /// This format is used for very low bandwidth connections and legacy clients.
+    ///
+    /// # Returns
+    ///
+    /// A `PixelFormat` instance configured for 8-bit BGR233.
+    #[allow(dead_code)]
+    pub fn bgr233() -> Self {
+        Self {
+            bits_per_pixel: 8,
+            depth: 8,
+            big_endian_flag: 0,
+            true_colour_flag: 1,
+            red_max: 7,     // 3 bits
+            green_max: 7,   // 3 bits
+            blue_max: 3,    // 2 bits
+            red_shift: 0,
+            green_shift: 3,
+            blue_shift: 6,
+        }
+    }
+
     /// Writes the pixel format data into a `BytesMut` buffer.
     ///
     /// This function serializes the `PixelFormat` into the RFB protocol format.

@@ -35,6 +35,7 @@ use crate::vnc::protocol::*;
 use crate::vnc::framebuffer::{Framebuffer, DirtyRegion};
 use crate::vnc::auth::VncAuth;
 use crate::vnc::encoding;
+use crate::vnc::translate;
 
 
 /// Represents various events that a VNC client can send to the server.
@@ -361,12 +362,13 @@ impl VncClient {
                                 buf.advance(3); // padding
                                 let requested_format = PixelFormat::from_bytes(&mut buf)?;
 
-                                // Validate that client's format is compatible with our RGBA32
-                                if !requested_format.is_compatible_with_rgba32() {
+                                // Validate that the requested format is valid and supported
+                                if !requested_format.is_valid() {
                                     error!(
-                                        "Client requested incompatible pixel format (bpp={}, depth={}, shifts=R{},G{},B{}). Server only supports RGBA32. Disconnecting.",
+                                        "Client requested invalid pixel format (bpp={}, depth={}, truecolor={}, shifts=R{},G{},B{}). Disconnecting.",
                                         requested_format.bits_per_pixel,
                                         requested_format.depth,
+                                        requested_format.true_colour_flag,
                                         requested_format.red_shift,
                                         requested_format.green_shift,
                                         requested_format.blue_shift
@@ -374,12 +376,26 @@ impl VncClient {
                                     let _ = self.event_tx.send(ClientEvent::Disconnected);
                                     return Err(std::io::Error::new(
                                         std::io::ErrorKind::InvalidData,
-                                        "Incompatible pixel format requested"
+                                        "Invalid pixel format requested"
                                     ));
                                 }
 
-                                *self.pixel_format.write().await = requested_format;
-                                info!("Client set pixel format: RGBA32 (compatible)");
+                                // Accept the format and store it for translation during encoding
+                                let compatible = requested_format.is_compatible_with_rgba32();
+                                *self.pixel_format.write().await = requested_format.clone();
+
+                                if compatible {
+                                    info!("Client set pixel format: RGBA32 (no translation needed)");
+                                } else {
+                                    info!(
+                                        "Client set pixel format: {}bpp, depth {}, R{}:{}  G{}:{} B{}:{} (will translate from RGBA32)",
+                                        requested_format.bits_per_pixel,
+                                        requested_format.depth,
+                                        requested_format.red_shift, requested_format.red_max,
+                                        requested_format.green_shift, requested_format.green_max,
+                                        requested_format.blue_shift, requested_format.blue_max
+                                    );
+                                }
                             }
                             CLIENT_MSG_SET_ENCODINGS => {
                                 if buf.len() < 4 { // 1 + 1 padding + 2 count
@@ -764,9 +780,46 @@ impl VncClient {
                 }
             };
 
-            // Encode using selected encoding with fallback to RAW
-            // ZLIB and ZRLE require persistent compressor per RFC 6143
-            let (actual_encoding, encoded) = if preferred_encoding == ENCODING_ZLIB {
+            // Apply pixel format translation and encode
+            // Note: Following libvncserver's approach where translation happens before encoding
+            let client_pixel_format = self.pixel_format.read().await;
+            let server_format = PixelFormat::rgba32();
+
+            let (actual_encoding, encoded) = if preferred_encoding == ENCODING_RAW {
+                // For Raw encoding: translation IS the encoding (like libvncserver)
+                // Just translate and send directly, no additional processing
+                let translated = if client_pixel_format.is_compatible_with_rgba32() {
+                    // Fast path: no translation, but still need to strip alpha
+                    let mut buf = BytesMut::with_capacity((region.width as usize * region.height as usize) * 4);
+                    for chunk in pixel_data.chunks_exact(4) {
+                        buf.put_u8(chunk[0]); // R
+                        buf.put_u8(chunk[1]); // G
+                        buf.put_u8(chunk[2]); // B
+                        buf.put_u8(0);        // Padding (not alpha)
+                    }
+                    buf
+                } else {
+                    // Translate from server format (RGBA32) to client's requested format
+                    translate::translate_pixels(&pixel_data, &server_format, &*client_pixel_format)
+                };
+                (ENCODING_RAW, translated)
+            } else if preferred_encoding == ENCODING_ZLIB {
+                // Translate pixels to client format first (libvncserver: translateFn before encode)
+                let translated = if client_pixel_format.is_compatible_with_rgba32() {
+                    // Fast path: no translation, but still need to strip alpha
+                    let mut buf = BytesMut::with_capacity((region.width as usize * region.height as usize) * 4);
+                    for chunk in pixel_data.chunks_exact(4) {
+                        buf.put_u8(chunk[0]); // R
+                        buf.put_u8(chunk[1]); // G
+                        buf.put_u8(chunk[2]); // B
+                        buf.put_u8(0);        // Padding (not alpha)
+                    }
+                    buf
+                } else {
+                    // Translate from server format (RGBA32) to client's requested format
+                    translate::translate_pixels(&pixel_data, &server_format, &*client_pixel_format)
+                };
+
                 // Initialize ZLIB compressor lazily on first use
                 let mut zlib_lock = self.zlib_compressor.write().await;
                 if zlib_lock.is_none() {
@@ -775,19 +828,32 @@ impl VncClient {
                 }
                 let zlib_comp = zlib_lock.as_mut().unwrap();
 
-                match encoding::encode_zlib_persistent(&pixel_data, zlib_comp) {
+                match encoding::encode_zlib_persistent(&translated, zlib_comp) {
                     Ok(data) => (ENCODING_ZLIB, BytesMut::from(&data[..])),
                     Err(e) => {
                         error!("ZLIB encoding failed: {}, falling back to RAW", e);
                         encoding_name = "RAW";
-                        if let Some(raw_encoder) = encoding::get_encoder(ENCODING_RAW) {
-                            (ENCODING_RAW, raw_encoder.encode(&pixel_data, region.width, region.height, jpeg_quality, compression_level))
-                        } else {
-                            (ENCODING_RAW, BytesMut::new())
-                        }
+                        // translated already contains the correctly formatted data
+                        (ENCODING_RAW, translated)
                     }
                 }
             } else if preferred_encoding == ENCODING_ZLIBHEX {
+                // Translate pixels to client format first (libvncserver: translateFn before encode)
+                let translated = if client_pixel_format.is_compatible_with_rgba32() {
+                    // Fast path: no translation, but still need to strip alpha
+                    let mut buf = BytesMut::with_capacity((region.width as usize * region.height as usize) * 4);
+                    for chunk in pixel_data.chunks_exact(4) {
+                        buf.put_u8(chunk[0]); // R
+                        buf.put_u8(chunk[1]); // G
+                        buf.put_u8(chunk[2]); // B
+                        buf.put_u8(0);        // Padding (not alpha)
+                    }
+                    buf
+                } else {
+                    // Translate from server format (RGBA32) to client's requested format
+                    translate::translate_pixels(&pixel_data, &server_format, &*client_pixel_format)
+                };
+
                 // Initialize ZLIBHEX compressor lazily on first use
                 let mut zlibhex_lock = self.zlibhex_compressor.write().await;
                 if zlibhex_lock.is_none() {
@@ -796,19 +862,32 @@ impl VncClient {
                 }
                 let zlibhex_comp = zlibhex_lock.as_mut().unwrap();
 
-                match encoding::encode_zlibhex_persistent(&pixel_data, region.width, region.height, zlibhex_comp) {
+                match encoding::encode_zlibhex_persistent(&translated, region.width, region.height, zlibhex_comp) {
                     Ok(data) => (ENCODING_ZLIBHEX, BytesMut::from(&data[..])),
                     Err(e) => {
                         error!("ZLIBHEX encoding failed: {}, falling back to RAW", e);
                         encoding_name = "RAW";
-                        if let Some(raw_encoder) = encoding::get_encoder(ENCODING_RAW) {
-                            (ENCODING_RAW, raw_encoder.encode(&pixel_data, region.width, region.height, jpeg_quality, compression_level))
-                        } else {
-                            (ENCODING_RAW, BytesMut::new())
-                        }
+                        // translated already contains the correctly formatted data
+                        (ENCODING_RAW, translated)
                     }
                 }
             } else if preferred_encoding == ENCODING_ZRLE {
+                // Translate pixels to client format first (libvncserver: translateFn before encode)
+                let translated = if client_pixel_format.is_compatible_with_rgba32() {
+                    // Fast path: no translation, but still need to strip alpha
+                    let mut buf = BytesMut::with_capacity((region.width as usize * region.height as usize) * 4);
+                    for chunk in pixel_data.chunks_exact(4) {
+                        buf.put_u8(chunk[0]); // R
+                        buf.put_u8(chunk[1]); // G
+                        buf.put_u8(chunk[2]); // B
+                        buf.put_u8(0);        // Padding (not alpha)
+                    }
+                    buf
+                } else {
+                    // Translate from server format (RGBA32) to client's requested format
+                    translate::translate_pixels(&pixel_data, &server_format, &*client_pixel_format)
+                };
+
                 // Initialize ZRLE compressor lazily on first use
                 let mut zrle_lock = self.zrle_compressor.write().await;
                 if zrle_lock.is_none() {
@@ -817,21 +896,18 @@ impl VncClient {
                 }
                 let zrle_comp = zrle_lock.as_mut().unwrap();
 
-                let pixel_format = PixelFormat::rgba32();
-                match encoding::encode_zrle_persistent(&pixel_data, region.width, region.height, &pixel_format, zrle_comp) {
+                // Use client's pixel format for encoding
+                match encoding::encode_zrle_persistent(&translated, region.width, region.height, &*client_pixel_format, zrle_comp) {
                     Ok(data) => (ENCODING_ZRLE, BytesMut::from(&data[..])),
                     Err(e) => {
                         error!("ZRLE encoding failed: {}, falling back to RAW", e);
                         encoding_name = "RAW";
-                        if let Some(raw_encoder) = encoding::get_encoder(ENCODING_RAW) {
-                            (ENCODING_RAW, raw_encoder.encode(&pixel_data, region.width, region.height, jpeg_quality, compression_level))
-                        } else {
-                            (ENCODING_RAW, BytesMut::new())
-                        }
+                        // translated already contains the correctly formatted data
+                        (ENCODING_RAW, translated)
                     }
                 }
             } else if preferred_encoding == ENCODING_ZYWRLE {
-                // ZYWRLE: Apply wavelet preprocessing then use ZRLE encoder
+                // ZYWRLE: Apply wavelet preprocessing then use ZRLE encoder (libvncserver approach)
                 let level = self.zywrle_level.load(Ordering::Relaxed) as usize;
 
                 // Allocate coefficient buffer for wavelet transform
@@ -846,7 +922,23 @@ impl VncClient {
                     level,
                     &mut coeff_buf
                 ) {
-                    // Now encode the transformed data with ZRLE (shares the ZRLE compressor)
+                    // Translate the wavelet-transformed data to client format
+                    let translated = if client_pixel_format.is_compatible_with_rgba32() {
+                        // Fast path: no translation, but still need to strip alpha
+                        let mut buf = BytesMut::with_capacity((region.width as usize * region.height as usize) * 4);
+                        for chunk in transformed_data.chunks_exact(4) {
+                            buf.put_u8(chunk[0]); // R
+                            buf.put_u8(chunk[1]); // G
+                            buf.put_u8(chunk[2]); // B
+                            buf.put_u8(0);        // Padding (not alpha)
+                        }
+                        buf
+                    } else {
+                        // Translate from server format (RGBA32) to client's requested format
+                        translate::translate_pixels(&transformed_data, &server_format, &*client_pixel_format)
+                    };
+
+                    // Now encode the translated data with ZRLE (shares the ZRLE compressor)
                     let mut zrle_lock = self.zrle_compressor.write().await;
                     if zrle_lock.is_none() {
                         *zrle_lock = Some(Compress::new(Compression::new(compression_level as u32), true));
@@ -854,42 +946,71 @@ impl VncClient {
                     }
                     let zrle_comp = zrle_lock.as_mut().unwrap();
 
-                    let pixel_format = PixelFormat::rgba32();
-                    match encoding::encode_zrle_persistent(&transformed_data, region.width, region.height, &pixel_format, zrle_comp) {
+                    // Use client's pixel format for encoding
+                    match encoding::encode_zrle_persistent(&translated, region.width, region.height, &*client_pixel_format, zrle_comp) {
                         Ok(data) => (ENCODING_ZYWRLE, BytesMut::from(&data[..])),
                         Err(e) => {
                             error!("ZYWRLE encoding failed: {}, falling back to RAW", e);
                             encoding_name = "RAW";
-                            if let Some(raw_encoder) = encoding::get_encoder(ENCODING_RAW) {
-                                (ENCODING_RAW, raw_encoder.encode(&pixel_data, region.width, region.height, jpeg_quality, compression_level))
-                            } else {
-                                (ENCODING_RAW, BytesMut::new())
-                            }
+                            // translated already contains the correctly formatted data
+                            (ENCODING_RAW, translated)
                         }
                     }
                 } else {
-                    // Analysis failed (dimensions too small), fall back to RAW
+                    // Analysis failed (dimensions too small), fall back to RAW with translation
                     error!("ZYWRLE analysis failed (dimensions too small), falling back to RAW");
                     encoding_name = "RAW";
-                    if let Some(raw_encoder) = encoding::get_encoder(ENCODING_RAW) {
-                        (ENCODING_RAW, raw_encoder.encode(&pixel_data, region.width, region.height, jpeg_quality, compression_level))
+                    // Translate original pixel_data for RAW fallback
+                    let translated = if client_pixel_format.is_compatible_with_rgba32() {
+                        let mut buf = BytesMut::with_capacity((region.width as usize * region.height as usize) * 4);
+                        for chunk in pixel_data.chunks_exact(4) {
+                            buf.put_u8(chunk[0]); // R
+                            buf.put_u8(chunk[1]); // G
+                            buf.put_u8(chunk[2]); // B
+                            buf.put_u8(0);        // Padding
+                        }
+                        buf
                     } else {
-                        (ENCODING_RAW, BytesMut::new())
-                    }
+                        translate::translate_pixels(&pixel_data, &server_format, &*client_pixel_format)
+                    };
+                    (ENCODING_RAW, translated)
                 };
                 result
             } else if let Some(encoder) = encoding::get_encoder(preferred_encoding) {
-                (preferred_encoding, encoder.encode(&pixel_data, region.width, region.height, jpeg_quality, compression_level))
+                // For other encodings (Tight, TightPng, Hextile): translate first then encode
+                let translated = if client_pixel_format.is_compatible_with_rgba32() {
+                    // Fast path: no translation, but still need to strip alpha
+                    let mut buf = BytesMut::with_capacity((region.width as usize * region.height as usize) * 4);
+                    for chunk in pixel_data.chunks_exact(4) {
+                        buf.put_u8(chunk[0]); // R
+                        buf.put_u8(chunk[1]); // G
+                        buf.put_u8(chunk[2]); // B
+                        buf.put_u8(0);        // Padding (not alpha)
+                    }
+                    buf
+                } else {
+                    // Translate from server format (RGBA32) to client's requested format
+                    translate::translate_pixels(&pixel_data, &server_format, &*client_pixel_format)
+                };
+                (preferred_encoding, encoder.encode(&translated, region.width, region.height, jpeg_quality, compression_level))
             } else {
                 // Fallback to RAW encoding if preferred encoding is not available
                 error!("Encoding {} not available, falling back to RAW", preferred_encoding);
                 encoding_name = "RAW"; // Update encoding name to reflect fallback
-                if let Some(raw_encoder) = encoding::get_encoder(ENCODING_RAW) {
-                    (ENCODING_RAW, raw_encoder.encode(&pixel_data, region.width, region.height, jpeg_quality, compression_level))
+                // Translate for RAW fallback
+                let translated = if client_pixel_format.is_compatible_with_rgba32() {
+                    let mut buf = BytesMut::with_capacity((region.width as usize * region.height as usize) * 4);
+                    for chunk in pixel_data.chunks_exact(4) {
+                        buf.put_u8(chunk[0]); // R
+                        buf.put_u8(chunk[1]); // G
+                        buf.put_u8(chunk[2]); // B
+                        buf.put_u8(0);        // Padding
+                    }
+                    buf
                 } else {
-                    error!("RAW encoding also not available, this should never happen!");
-                    (preferred_encoding, BytesMut::new())
-                }
+                    translate::translate_pixels(&pixel_data, &server_format, &*client_pixel_format)
+                };
+                (ENCODING_RAW, translated)
             };
 
             // Write rectangle header with actual encoding used
