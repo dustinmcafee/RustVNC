@@ -26,8 +26,9 @@ const TIGHT_JPEG: u8 = 0x09;
 const TIGHT_FILTER_PALETTE: u8 = 0x01;
 
 // Stream IDs for different encoding types
-const STREAM_ID_MONO: u8 = 1;      // Mono rect (2 colors)
-const STREAM_ID_INDEXED: u8 = 2;   // Indexed palette (3-16 colors)
+const STREAM_ID_FULL_COLOR: u8 = 0; // Full-color (truecolor)
+const STREAM_ID_MONO: u8 = 1;       // Mono rect (2 colors)
+const STREAM_ID_INDEXED: u8 = 2;    // Indexed palette (3-16 colors)
 
 // Minimum data size to apply compression (from libvncserver tight.c line 48)
 const TIGHT_MIN_TO_COMPRESS: usize = 12;
@@ -63,8 +64,17 @@ impl Encoding for TightEncoding {
             _ => {}
         }
 
-        // Method 3: Use JPEG for photographic content (powered by libjpeg-turbo)
-        encode_tight_jpeg(data, width, height, quality)
+        // Method 3: Choose between full-color zlib and JPEG based on quality setting
+        // Following libvncserver's logic: use JPEG for high quality photographic content,
+        // use full-color zlib for lossless compression or lower quality settings
+        if quality == 0 || quality >= 10 {
+            // Quality 0 = lossless preference, quality >= 10 = disable JPEG
+            // Use full-color zlib mode
+            encode_tight_full_color(data, width, height, compression)
+        } else {
+            // Quality 1-9: Use JPEG for photographic content (powered by libjpeg-turbo)
+            encode_tight_jpeg(data, width, height, quality)
+        }
     }
 }
 
@@ -346,5 +356,55 @@ fn encode_tight_jpeg(data: &[u8], width: u16, height: u16, quality: u8) -> Bytes
     write_compact_length(&mut buf, jpeg_data.len());
 
     buf.put_slice(&jpeg_data);
+    buf
+}
+
+/// Encode as Tight full-color with zlib compression (lossless).
+/// Wire format: [0x00] [length...] [compressed RGB24 data]
+/// Following libvncserver tight.c SendFullColorRect (lines 962-992)
+fn encode_tight_full_color(data: &[u8], width: u16, height: u16, compression: u8) -> BytesMut {
+    // Convert RGBA32 to RGB24 (3 bytes per pixel) for better compression
+    let mut rgb_data = Vec::with_capacity((width as usize) * (height as usize) * 3);
+    for chunk in data.chunks_exact(4) {
+        rgb_data.push(chunk[0]); // R
+        rgb_data.push(chunk[1]); // G
+        rgb_data.push(chunk[2]); // B
+    }
+
+    // Determine zlib compression level based on VNC compression setting
+    let compression_level = match compression {
+        0 => Compression::fast(),
+        1..=3 => Compression::new(compression as u32),
+        4..=6 => Compression::default(),
+        _ => Compression::best(),
+    };
+
+    let mut buf = BytesMut::new();
+
+    // Control byte: stream 0, no filter, basic compression
+    buf.put_u8(STREAM_ID_FULL_COLOR << 4); // 0x00
+
+    // Compress data if >= TIGHT_MIN_TO_COMPRESS, otherwise send uncompressed
+    if rgb_data.len() >= TIGHT_MIN_TO_COMPRESS {
+        let mut encoder = ZlibEncoder::new(Vec::new(), compression_level);
+        match encoder.write_all(&rgb_data).and_then(|_| encoder.finish()) {
+            Ok(compressed) => {
+                // Send compressed data
+                write_compact_length(&mut buf, compressed.len());
+                buf.put_slice(&compressed);
+            }
+            Err(e) => {
+                // Compression failed, send uncompressed
+                log::warn!("Zlib compression failed: {}, sending uncompressed", e);
+                write_compact_length(&mut buf, rgb_data.len());
+                buf.put_slice(&rgb_data);
+            }
+        }
+    } else {
+        // Data too small to compress, send uncompressed without length header
+        // (libvncserver doesn't send length for data < TIGHT_MIN_TO_COMPRESS)
+        buf.put_slice(&rgb_data);
+    }
+
     buf
 }
