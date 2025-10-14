@@ -14,7 +14,7 @@ This fork replaces the entire native VNC server stack with a pure Rust implement
 
 All original features remain intact - this is a drop-in replacement at the native layer.
 
-For technical details about the migration, see [RUST_MIGRATION.md](RUST_MIGRATION.md).
+For comprehensive technical details about the Rust VNC implementation, including encoding specifications, performance characteristics, and migration status, see [TECHNICAL.md](TECHNICAL.md).
 
 ---
 
