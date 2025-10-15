@@ -1,0 +1,70 @@
+RustVNC - VNC Server for Android
+Copyright (C) 2025 Dustin McAfee
+Copyright (C) 2020 Christian Beier (original droidVNC-NG)
+
+This application is licensed under the GNU General Public License version 2.0
+(GPL-2.0) as it is a derivative work of droidVNC-NG.
+
+================================================================================
+
+THIRD-PARTY SOFTWARE NOTICES AND INFORMATION
+
+This application incorporates components from the projects listed below.
+
+================================================================================
+
+1. droidVNC-NG (Original Android Application)
+   Copyright (C) 2020 Christian Beier
+   License: GPL-2.0
+   Source: https://github.com/bk138/droidVNC-NG
+
+   This application is a fork of droidVNC-NG with the native VNC server
+   implementation replaced with a Rust-based implementation.
+
+================================================================================
+
+2. rustvncserver (VNC Server Library)
+   Copyright (C) 2025 Dustin McAfee
+   License: Apache-2.0
+
+   Pure Rust VNC (RFB) server implementation used by this application.
+
+   This library implements the VNC protocol as specified in RFC 6143 and
+   includes the following third-party components:
+
+   - ZYWRLE Algorithm
+     Copyright 2006 by Hitachi Systems & Services, Ltd.
+     (Noriaki Yamazaki, Research & Development Center)
+     Used under BSD-style license
+
+   - Rust Dependencies (all compatible with GPL-2.0):
+     * tokio (MIT License)
+     * bytes (MIT License)
+     * flate2 (MIT OR Apache-2.0)
+     * png (MIT OR Apache-2.0)
+     * log (MIT OR Apache-2.0)
+     * thiserror (MIT OR Apache-2.0)
+     * des (MIT OR Apache-2.0)
+     * rand (MIT OR Apache-2.0)
+
+================================================================================
+
+3. libjpeg-turbo
+   License: BSD-style (IJG, Modified BSD, zlib)
+   Source: https://libjpeg-turbo.org/
+
+   High-performance JPEG codec used for Tight encoding with JPEG compression.
+
+================================================================================
+
+4. noVNC
+   License: MPL-2.0
+   Source: https://github.com/novnc/noVNC
+
+   HTML5 VNC client included for browser-based access.
+
+================================================================================
+
+For the complete GPL-2.0 license text, see the COPYING file in this directory.
+
+For questions about licensing, please contact the copyright holders.
