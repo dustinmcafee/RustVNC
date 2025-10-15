@@ -7,6 +7,7 @@ use std::ffi::c_void;
 use std::os::raw::{c_char, c_int, c_uchar, c_ulong};
 
 // TurboJPEG constants
+#[allow(dead_code)]
 pub const TJPF_RGB: c_int = 0; // RGB pixel format
 #[allow(dead_code)]
 pub const TJPF_BGR: c_int = 1; // BGR pixel format
@@ -23,6 +24,7 @@ pub const TJPF_GRAY: c_int = 6; // Grayscale pixel format
 
 #[allow(dead_code)]
 pub const TJSAMP_444: c_int = 0; // 4:4:4 chrominance subsampling
+#[allow(dead_code)]
 pub const TJSAMP_422: c_int = 1; // 4:2:2 chrominance subsampling
 #[allow(dead_code)]
 pub const TJSAMP_420: c_int = 2; // 4:2:0 chrominance subsampling
@@ -33,6 +35,7 @@ pub const TJSAMP_GRAY: c_int = 3; // Grayscale
 type TjHandle = *mut c_void;
 
 // External C functions from libjpeg-turbo
+#[allow(dead_code)]
 extern "C" {
     fn tjInitCompress() -> TjHandle;
     fn tjDestroy(handle: TjHandle) -> c_int;
@@ -54,10 +57,12 @@ extern "C" {
 }
 
 /// Safe Rust wrapper for TurboJPEG compression.
+#[allow(dead_code)]
 pub struct TurboJpegEncoder {
     handle: TjHandle,
 }
 
+#[allow(dead_code)]
 impl TurboJpegEncoder {
     /// Creates a new TurboJPEG encoder.
     pub fn new() -> Result<Self, String> {
