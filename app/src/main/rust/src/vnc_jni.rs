@@ -910,7 +910,7 @@ pub extern "system" fn Java_net_christianbeier_droidvnc_1ng_MainService_vncConne
 #[no_mangle]
 #[allow(non_snake_case)]
 pub extern "system" fn Java_net_christianbeier_droidvnc_1ng_MainService_vncGetRemoteHost<'local>(
-    mut env: JNIEnv<'local>,
+    env: JNIEnv<'local>,
     _class: JClass<'local>,
     client_id: jlong,
 ) -> JString<'local> {
@@ -990,7 +990,7 @@ pub extern "system" fn Java_net_christianbeier_droidvnc_1ng_MainService_vncGetDe
 #[no_mangle]
 #[allow(non_snake_case)]
 pub extern "system" fn Java_net_christianbeier_droidvnc_1ng_MainService_vncGetRepeaterId<'local>(
-    mut env: JNIEnv<'local>,
+    env: JNIEnv<'local>,
     _class: JClass<'local>,
     client_id: jlong,
 ) -> JString<'local> {
