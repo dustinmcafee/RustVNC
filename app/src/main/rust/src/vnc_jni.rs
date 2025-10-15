@@ -1,3 +1,18 @@
+// Copyright 2025 Dustin McAfee
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+
 //! JNI bindings for the Rust VNC Server, allowing it to be controlled from a Java/Android application.
 //!
 //! This module exposes functions to initialize, start, stop, and interact with the VNC server.
@@ -548,8 +563,7 @@ pub extern "system" fn Java_net_christianbeier_droidvnc_1ng_MainService_vncUpdat
 /// JNI entry point to resize the framebuffer to new dimensions.
 ///
 /// This function creates a new framebuffer with the specified dimensions, preserving
-/// as much of the existing content as possible. This is equivalent to libvncserver's
-/// `rfbNewFramebuffer` function.
+/// as much of the existing content as possible.
 ///
 /// # Arguments
 ///
@@ -1235,7 +1249,6 @@ fn handle_server_event(event: ServerEvent) {
 /// JNI entry point to schedule a copy rectangle operation for all connected clients.
 ///
 /// This method schedules a copy operation without performing the actual framebuffer copy.
-/// It is equivalent to libvncserver's `rfbScheduleCopyRect` function.
 ///
 /// # Arguments
 ///
@@ -1295,7 +1308,7 @@ pub extern "system" fn Java_net_christianbeier_droidvnc_1ng_MainService_vncSched
 /// JNI entry point to perform a copy rectangle operation in the framebuffer.
 ///
 /// This method performs the actual framebuffer copy and schedules the copy operation
-/// for all connected clients. It is equivalent to libvncserver's `rfbDoCopyRect` function.
+/// for all connected clients.
 ///
 /// # Arguments
 ///
