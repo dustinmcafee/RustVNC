@@ -156,6 +156,7 @@ dependencies = [
  "once_cell",
  "png",
  "rand",
+ "rustvncserver",
  "thiserror 2.0.17",
  "tokio",
 ]
@@ -463,6 +464,20 @@ name = "rustc-demangle"
 version = "0.1.26"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "56f7d92ca342cea22a06f2121d944b4fd82af56988c270852495420f961d4ace"
+
+[[package]]
+name = "rustvncserver"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "des",
+ "flate2",
+ "log",
+ "png",
+ "rand",
+ "thiserror 1.0.69",
+ "tokio",
+]
 
 [[package]]
 name = "same-file"
