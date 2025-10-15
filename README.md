@@ -14,7 +14,7 @@ This fork replaces the entire native VNC server stack with a pure Rust implement
 
 All original features remain intact - this is a drop-in replacement at the native layer.
 
-For comprehensive technical details about the Rust VNC implementation, including encoding specifications, performance characteristics, and libvncserver parity, see [rustvncserver/TECHNICAL.md](rustvncserver/TECHNICAL.md).
+For comprehensive technical details about the Rust VNC implementation, including encoding specifications and performance characteristics, see [rustvncserver/TECHNICAL.md](rustvncserver/TECHNICAL.md).
 
 ---
 
