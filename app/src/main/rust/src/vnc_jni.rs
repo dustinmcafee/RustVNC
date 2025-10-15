@@ -14,8 +14,8 @@ use tokio::sync::{mpsc, broadcast};
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-use crate::vnc::server::VncServer;
-use crate::vnc::server::ServerEvent;
+use rustvncserver::server::VncServer;
+use rustvncserver::server::ServerEvent;
 
 /// Global Tokio runtime for the VNC server.
 static VNC_RUNTIME: OnceCell<Runtime> = OnceCell::new();
@@ -1067,23 +1067,6 @@ pub extern "system" fn Java_net_christianbeier_droidvnc_1ng_MainService_vncDisco
     }
 
     JNI_FALSE
-}
-
-/// Helper function to find a client by its ID.
-///
-/// # Arguments
-///
-/// * `server` - The VNC server instance.
-/// * `client_id` - The client ID to search for.
-///
-/// # Returns
-///
-/// An `Option<Arc<RwLock<VncClient>>>` containing the client if found, or None.
-async fn find_client_by_id(
-    server: &VncServer,
-    client_id: usize,
-) -> Option<Arc<tokio::sync::RwLock<crate::vnc::client::VncClient>>> {
-    server.find_client(client_id).await
 }
 
 /// Spawns a long-running asynchronous task to handle VNC server events.

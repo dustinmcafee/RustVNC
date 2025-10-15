@@ -4,3 +4,6 @@
 [submodule "noVNC"]
 	path = noVNC
 	url = https://github.com/novnc/noVNC.git
+[submodule "rustvncserver"]
+	path = rustvncserver
+	url = git@github.com:dustinmcafee/rustvncserver.git
