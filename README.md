@@ -29,7 +29,6 @@ For comprehensive technical details about the Rust VNC implementation, including
 * Handling of special keys to trigger 'Recent Apps' overview, Home button, Back button and Power button.
 * Android permission handling.
 * Screen rotation handling.
-* File transfer via the local network, assuming TightVNC viewer for Windows version 1.3.x is used.
 * Password protection for secure-in-terms-of-VNC connection. Note that setting a password is mandatory
   in case you want to access the server using MacOS's built-in Screen Sharing app.
 * Ability to specify the port used.
@@ -107,7 +106,6 @@ An example `defaults.json` with completely new defaults (not all entries need to
     "scaling": 0.7,
     "viewOnly": false,
     "showPointers": true,
-    "fileTransfer": true,
     "password": "supersecure",
     "accessKey": "evenmoresecure",
     "startOnBoot": true,
@@ -141,7 +139,6 @@ the following Actions and associated Extras set:
   * `net.christianbeier.droidvnc_ng.EXTRA_SCALING`: Optional Float Extra between 0.0 and 1.0 describing the server-side framebuffer scaling.
   * `net.christianbeier.droidvnc_ng.EXTRA_VIEW_ONLY`:  Optional Boolean Extra toggling view-only mode.
   * `net.christianbeier.droidvnc_ng.EXTRA_SHOW_POINTERS`:  Optional Boolean Extra toggling per-client mouse pointers.
-  * `net.christianbeier.droidvnc_ng.EXTRA_FILE_TRANSFER`: Optional Boolean Extra toggling the file transfer feature.
   * `net.christianbeier.droidvnc_ng.EXTRA_FALLBACK_SCREEN_CAPTURE`: Optional Boolean Extra indicating whether to start with fallback screen capture that does not need a
      user interaction to start but is slow and needs view-only to be off. Only applicable to Android 10 and newer.
 
