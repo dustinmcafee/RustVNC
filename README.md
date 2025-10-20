@@ -1,6 +1,6 @@
 # droidVNC-NG (Rust Edition)
 
-> **Fork Notice:** This is a Rust-powered fork of the original [droidVNC-NG](https://github.com/bk138/droidVNC-NG) project. The native VNC server implementation has been completely rewritten in Rust, replacing the C-based libvncserver with a modern, memory-safe implementation.
+> **Fork Notice:** This is a Rust-powered fork of the original [droidVNC-NG](https://github.com/bk138/droidVNC-NG) project.
 
 ## What's Different in This Fork?
 
@@ -9,7 +9,6 @@ This fork replaces the entire native VNC server stack with a pure Rust implement
 - **Memory Safety**: Zero buffer overflows, use-after-free bugs, or null pointer dereferences
 - **Modern Async I/O**: Built on Tokio runtime for efficient connection handling
 - **Better Performance**: Zero-copy framebuffer updates and SIMD-optimized encoding
-- **Smaller Codebase**: ~3,500 lines of Rust vs ~20,000 lines of C in libvncserver
 - **Easier Maintenance**: Modern language features, better error handling, and comprehensive type safety
 
 All original features remain intact - this is a drop-in replacement at the native layer.
