@@ -10,8 +10,8 @@ crate-type = ["cdylib"]
 name = "droidvnc_ng"
 
 [dependencies]
-# VNC Server library
-rustvncserver = { path = "../../../../rustvncserver" }
+# VNC Server library from crates.io
+rustvncserver = "1.0"
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }
