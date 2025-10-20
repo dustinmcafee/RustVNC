@@ -305,8 +305,22 @@ pub extern "system" fn Java_net_christianbeier_droidvnc_1ng_MainService_vncStart
 
 /// JNI entry point to stop the VNC server.
 ///
-/// This function sends a shutdown signal to all active server tasks and clears the global
-/// server reference, effectively stopping the VNC server.
+/// This function performs a coordinated shutdown sequence:
+///
+/// 1. **Retrieve client IDs** - Gets a list of all connected client IDs without locking
+///    VncClient objects to avoid delays
+/// 2. **Call Java callbacks** - Invokes `onClientDisconnected()` for each client to remove
+///    cursors and update UI state
+/// 3. **Disconnect clients** - Calls `disconnect_all_clients()` with a 3-second timeout to:
+///    - Abort all client tasks (message handlers and event handlers)
+///    - Wait for tasks to exit and drop their VncClient references
+///    - Clear the client list to drop the final VncClient references (closes read halves)
+///    - Close all TCP write halves
+/// 4. **Shutdown async tasks** - Sends shutdown signal to the listener and event handler tasks
+/// 5. **Clear server reference** - Removes the server from the global VNC_SERVER container
+///
+/// The 3-second timeout prevents ANR (Application Not Responding) on Android while still
+/// ensuring proper cleanup for most scenarios.
 ///
 /// # Arguments
 ///
@@ -315,7 +329,7 @@ pub extern "system" fn Java_net_christianbeier_droidvnc_1ng_MainService_vncStart
 ///
 /// # Returns
 ///
-/// `JNI_TRUE` to indicate that the stop command was issued.
+/// `JNI_TRUE` to indicate that the server stop sequence completed successfully.
 #[no_mangle]
 #[allow(non_snake_case)]
 pub extern "system" fn Java_net_christianbeier_droidvnc_1ng_MainService_vncStopServer(
@@ -324,22 +338,79 @@ pub extern "system" fn Java_net_christianbeier_droidvnc_1ng_MainService_vncStopS
 ) -> jboolean {
     info!("Stopping Rust VNC Server");
 
-    // Send shutdown signal to all tasks
-    if let Some(shutdown_tx) = SHUTDOWN_SIGNAL.get() {
-        let _ = shutdown_tx.send(());
-    }
-
-    // Clear server reference
+    // Step 1: Abort tasks and close sockets IMMEDIATELY without waiting
     if let Some(server_container) = VNC_SERVER.get() {
-        if let Ok(mut guard) = server_container.lock() {
-            *guard = None;
+        if let Ok(guard) = server_container.lock() {
+            if let Some(server_arc) = guard.as_ref() {
+                // Get client IDs without locking VncClient objects
+                let client_ids = server_arc.get_client_ids().unwrap_or_else(|_| {
+                    warn!("Failed to get read lock on client IDs list");
+                    Vec::new()
+                });
+
+                info!("Found {} client(s) to disconnect", client_ids.len());
+
+                let runtime = get_or_init_vnc_runtime();
+                let server_clone = server_arc.clone();
+
+                // Call Java onClientDisconnected for each client
+                if let Some(vm) = JAVA_VM.get() {
+                    if let Ok(mut env) = vm.attach_current_thread() {
+                        if let Some(main_class) = MAIN_SERVICE_CLASS.get() {
+                            for client_id in &client_ids {
+                                info!("Calling Java onClientDisconnected for client {}", client_id);
+                                let args = [JValue::Long(*client_id as jlong)];
+                                if let Err(e) = env.call_static_method(main_class, "onClientDisconnected", "(J)V", &args) {
+                                    error!("Failed to call onClientDisconnected for client {}: {}", client_id, e);
+                                } else {
+                                    info!("Successfully called onClientDisconnected for client {}", client_id);
+                                }
+                            }
+                        } else {
+                            error!("MainService class not available");
+                        }
+                    } else {
+                        error!("Failed to attach to Java thread");
+                    }
+                } else {
+                    error!("Java VM not available");
+                }
+
+                // Disconnect all clients with timeout to prevent ANR
+                info!("Disconnecting all clients with 3s timeout");
+                let disconnect_result = runtime.block_on(async {
+                    tokio::time::timeout(
+                        tokio::time::Duration::from_secs(3),
+                        server_clone.disconnect_all_clients()
+                    ).await
+                });
+
+                match disconnect_result {
+                    Ok(_) => info!("All clients disconnected successfully"),
+                    Err(_) => warn!("Client disconnect timed out after 3s"),
+                }
+            }
         }
     }
 
-    // Reset event handler flag
+    // Step 2: Send shutdown signal to async tasks (listener and event handler)
+    if let Some(shutdown_tx) = SHUTDOWN_SIGNAL.get() {
+        info!("Sending shutdown signal to tasks");
+        let _ = shutdown_tx.send(());
+    }
+
+    // Step 3: Clear server reference (drops the Arc<VncServer>)
+    if let Some(server_container) = VNC_SERVER.get() {
+        if let Ok(mut guard) = server_container.lock() {
+            *guard = None;
+            info!("Server reference cleared");
+        }
+    }
+
+    // Step 4: Reset event handler flag
     EVENT_HANDLER_RUNNING.store(false, Ordering::SeqCst);
 
-    info!("Rust VNC Server stopped");
+    info!("Rust VNC Server stopped successfully");
     JNI_TRUE
 }
 
