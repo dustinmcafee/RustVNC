@@ -11,7 +11,7 @@ name = "droidvnc_ng"
 
 [dependencies]
 # VNC Server library from crates.io
-rustvncserver = "1.0"
+rustvncserver = "1.1"
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }
