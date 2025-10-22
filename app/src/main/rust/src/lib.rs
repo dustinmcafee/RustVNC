@@ -21,7 +21,6 @@
 //! # Modules
 //!
 //! - `vnc_jni`: Provides the JNI bindings for the VNC server to interface with Java code.
-//! - `turbojpeg`: FFI bindings to libjpeg-turbo for JPEG compression.
 //!
 //! # Architecture
 //!
@@ -31,4 +30,3 @@
 //! server to Java code.
 
 mod vnc_jni;
-mod turbojpeg;
