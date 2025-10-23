@@ -411,9 +411,9 @@ checksum = "7a2d987857b319362043e95f5353c0535c1f58eec5336fdfcf626430af7def58"
 
 [[package]]
 name = "rustvncserver"
-version = "1.1.4"
+version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "82b87c99b08e6db35e8dbac2045a194681d5db13fa8535362178e9c811932968"
+checksum = "aa1604056515e8064558ecdb5a60b0b300f62322ed43e1f53eff3ed850918301"
 dependencies = [
  "bytes",
  "des",
