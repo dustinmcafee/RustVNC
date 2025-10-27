@@ -410,17 +410,28 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7a2d987857b319362043e95f5353c0535c1f58eec5336fdfcf626430af7def58"
 
 [[package]]
-name = "rustvncserver"
-version = "1.1.5"
+name = "rfb-encodings"
+version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aa1604056515e8064558ecdb5a60b0b300f62322ed43e1f53eff3ed850918301"
+checksum = "08833e4acd152dcc9ecffeb257459d0412d27194156c20cc5dce81ad99085b4b"
+dependencies = [
+ "bytes",
+ "flate2",
+ "png",
+]
+
+[[package]]
+name = "rustvncserver"
+version = "2.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e4f383e9f56d5bfa2f9079d1e6197a9438612cddf89c078079bf296698681b97"
 dependencies = [
  "bytes",
  "des",
  "flate2",
  "log",
- "png",
  "rand",
+ "rfb-encodings",
  "thiserror 1.0.69",
  "tokio",
 ]
