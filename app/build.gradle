@@ -78,19 +78,37 @@ tasks.register('buildLibjpegTurbo', Exec) {
         def installDir = "${buildOutputDir}/${abi}/install"
         def toolchainFile = "${ndkDir}/build/cmake/android.toolchain.cmake"
 
-        // Use Android SDK's CMake if available, otherwise use system cmake
+        // Use system cmake (3.22+) for NDK 27+ compatibility with SIMD
+        // NDK 27 requires CMake 3.19+ for proper assembler detection
         def cmakeCmd = "cmake"
-        def sdkCmake = "${android.sdkDirectory}/cmake"
-        def cmakeVersionDirs = new File(sdkCmake).exists() ? new File(sdkCmake).listFiles()?.findAll { it.isDirectory() } : []
-        if (cmakeVersionDirs && !cmakeVersionDirs.isEmpty()) {
-            // Use the latest CMake version from SDK
-            def latestCmake = cmakeVersionDirs.sort { it.name }.last()
-            cmakeCmd = "${latestCmake}/bin/cmake"
-            println "Using Android SDK CMake: ${cmakeCmd}"
+        println "Using system CMake for NDK 27+ SIMD compatibility"
+
+        // CMAKE_ASM_FLAGS needed for ARM SIMD - GAS test requires target flag
+        def asmFlags = ""
+        if (abi == "armeabi-v7a" || abi == "arm64-v8a") {
+            asmFlags = "-DCMAKE_ASM_FLAGS=\\\"--target=${targetTriple}${androidApiLevel}\\\""
         }
 
         """
         echo "Building libjpeg-turbo for ABI: ${abi}"
+
+        # Check CMake version - NDK 27+ requires CMake 3.19+ for SIMD
+        CMAKE_VERSION=\$(cmake --version | head -1 | grep -oE '[0-9]+\\.[0-9]+' | head -1)
+        CMAKE_MAJOR=\$(echo \$CMAKE_VERSION | cut -d. -f1)
+        CMAKE_MINOR=\$(echo \$CMAKE_VERSION | cut -d. -f2)
+        if [ "\$CMAKE_MAJOR" -lt 3 ] || ([ "\$CMAKE_MAJOR" -eq 3 ] && [ "\$CMAKE_MINOR" -lt 19 ]); then
+            echo ""
+            echo "\\033[1;31m##########################################################\\033[0m"
+            echo "\\033[1;31m#                                                        #\\033[0m"
+            echo "\\033[1;31m#  WARNING: CMake version \$CMAKE_VERSION is too old!              #\\033[0m"
+            echo "\\033[1;31m#  NDK 27+ requires CMake 3.19+ for SIMD support.        #\\033[0m"
+            echo "\\033[1;31m#  JPEG encoding will be SLOW without SIMD!              #\\033[0m"
+            echo "\\033[1;31m#                                                        #\\033[0m"
+            echo "\\033[1;31m#  Please install CMake 3.19 or newer.                   #\\033[0m"
+            echo "\\033[1;31m#                                                        #\\033[0m"
+            echo "\\033[1;31m##########################################################\\033[0m"
+            echo ""
+        fi
 
         mkdir -p "${buildDir}"
         mkdir -p "${installDir}"
@@ -103,6 +121,7 @@ tasks.register('buildLibjpegTurbo', Exec) {
             -DANDROID_PLATFORM=android-${androidApiLevel} \\
             -DCMAKE_INSTALL_PREFIX="${installDir}" \\
             -DCMAKE_BUILD_TYPE=Release \\
+            ${asmFlags} \\
             -DENABLE_SHARED=OFF \\
             -DENABLE_STATIC=ON \\
             -DWITH_TURBOJPEG=ON \\
