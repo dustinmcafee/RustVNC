@@ -12,21 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-
 //! DroidVNC-NG Rust VNC Server Library
 //!
-//! This crate provides a pure Rust VNC server implementation for Android,
-//! using the standalone rustvncserver library.
+//! This crate produces the cdylib that gets loaded by the Android app.
+//! It re-exports rustvncserver-android which provides all the VNC functionality.
 //!
-//! # Modules
-//!
-//! - `vnc_jni`: Provides the JNI bindings for the VNC server to interface with Java code.
-//!
-//! # Architecture
-//!
-//! The VNC server functionality is provided by the `rustvncserver` library,
-//! which is a standalone, platform-agnostic VNC server implementation.
-//! This crate provides the Android-specific JNI bindings to expose the
-//! server to Java code.
+//! The JNI_OnLoad entry point is provided by rustvncserver-android and reads
+//! class names from Java system properties set before System.loadLibrary().
 
-mod vnc_jni;
+// Re-export everything from rustvncserver-android, including JNI_OnLoad
+pub use rustvncserver_android::*;

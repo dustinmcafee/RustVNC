@@ -10,26 +10,8 @@ crate-type = ["cdylib"]
 name = "droidvnc_ng"
 
 [dependencies]
-# VNC Server library from crates.io
-rustvncserver = { version = "2.0.0", features = ["turbojpeg"] }
+rustvncserver-android = { version = "1.2", features = ["turbojpeg"] }
 
-# Async runtime
-tokio = { version = "1", features = ["full"] }
-
-# Logging
-log = "0.4"
-android_logger = "0.15"
-
-# JNI bindings
-jni = "0.21"
-once_cell = "1.19"
-
-# VNC Server dependencies (keeping for JNI bridge compatibility)
-bytes = "1.5"
-byteorder = "1.5"
-thiserror = "2.0"
-flate2 = "1.0"  # zlib compression
-png = "0.17"     # PNG encoding for TightPng
-# Using libjpeg-turbo via FFI for JPEG compression (built in build.rs)
-des = "0.8"  # DES encryption for VNC authentication
-rand = "0.8"  # Random number generation for challenge
+[features]
+default = []
+debug-logging = ["rustvncserver-android/debug-logging"]

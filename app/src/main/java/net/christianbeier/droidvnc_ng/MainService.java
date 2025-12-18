@@ -200,7 +200,13 @@ public class MainService extends Service {
     };
 
     static {
-        // order is important here
+        // Configure rustvncserver-android class names before loading library
+        // These properties are read by JNI_OnLoad to register native methods
+        System.setProperty("rustvnc.main_service_class", "net/christianbeier/droidvnc_ng/MainService");
+        System.setProperty("rustvnc.input_service_class", "net/christianbeier/droidvnc_ng/InputService");
+        System.setProperty("rustvnc.log_tag", "DroidVNC-Rust");
+
+        // Load the VNC server library
         System.loadLibrary("droidvnc_ng");
     }
 
